@@ -12,10 +12,7 @@ class HighlightedTextEditingController extends TextEditingController {
   /// 相同词标记的 id 以 'hl-same-' 开头, 渲染时颜色更淡
   List<HighlightMark> highlights;
 
-  HighlightedTextEditingController({
-    super.text,
-    this.highlights = const [],
-  });
+  HighlightedTextEditingController({super.text, this.highlights = const []});
 
   @override
   TextSpan buildTextSpan({
@@ -25,15 +22,84 @@ class HighlightedTextEditingController extends TextEditingController {
   }) {
     final text = this.text;
     if (text.isEmpty) return TextSpan(text: '', style: style);
+    final composing = value.composing;
+    final composingStart =
+        withComposing && value.isComposingRangeValid && !composing.isCollapsed
+            ? composing.start
+            : text.length;
+    final composingEnd =
+        composingStart < text.length ? composing.end : text.length;
+
+    TextStyle? styleForRange(int start, int end, {Color? backgroundColor}) {
+      final base = style ?? const TextStyle();
+      final overlapsComposing =
+          composingStart < composingEnd &&
+          start < composingEnd &&
+          composingStart < end;
+      final existingDecoration = base.decoration;
+      final decoration =
+          overlapsComposing
+              ? (existingDecoration == null
+                  ? TextDecoration.underline
+                  : TextDecoration.combine([
+                    existingDecoration,
+                    TextDecoration.underline,
+                  ]))
+              : existingDecoration;
+      return base.copyWith(
+        backgroundColor: backgroundColor,
+        decoration: decoration,
+      );
+    }
+
+    List<InlineSpan> spansForRange(int start, int end, {Color? background}) {
+      final spans = <InlineSpan>[];
+      var cursor = start;
+      if (composingStart > start && composingStart < end) {
+        spans.add(
+          TextSpan(
+            text: text.substring(start, composingStart),
+            style: styleForRange(
+              start,
+              composingStart,
+              backgroundColor: background,
+            ),
+          ),
+        );
+        cursor = composingStart;
+      }
+      if (composingEnd > cursor && composingEnd < end) {
+        spans.add(
+          TextSpan(
+            text: text.substring(cursor, composingEnd),
+            style: styleForRange(
+              cursor,
+              composingEnd,
+              backgroundColor: background,
+            ),
+          ),
+        );
+        cursor = composingEnd;
+      }
+      if (cursor < end) {
+        spans.add(
+          TextSpan(
+            text: text.substring(cursor, end),
+            style: styleForRange(cursor, end, backgroundColor: background),
+          ),
+        );
+      }
+      return spans;
+    }
 
     // 排序: 按 start, 主高亮 (非 same) 优先于相同词
     final sorted = [...highlights]..sort((a, b) {
-        final c = a.startOffset.compareTo(b.startOffset);
-        if (c != 0) return c;
-        final aSame = a.id.startsWith('hl-same-');
-        final bSame = b.id.startsWith('hl-same-');
-        return aSame ? 1 : (bSame ? -1 : 0);
-      });
+      final c = a.startOffset.compareTo(b.startOffset);
+      if (c != 0) return c;
+      final aSame = a.id.startsWith('hl-same-');
+      final bSame = b.id.startsWith('hl-same-');
+      return aSame ? 1 : (bSame ? -1 : 0);
+    });
 
     // 去除越界 & 合并重叠 (保留主高亮, 丢弃被覆盖的相同词)
     final valid = <HighlightMark>[];
@@ -48,7 +114,7 @@ class HighlightedTextEditingController extends TextEditingController {
     }
 
     if (valid.isEmpty) {
-      return TextSpan(text: text, style: style);
+      return TextSpan(style: style, children: spansForRange(0, text.length));
     }
 
     // 按区间切分文本, 生成 children
@@ -57,29 +123,24 @@ class HighlightedTextEditingController extends TextEditingController {
     for (final m in valid) {
       // 普通区间 (cursor → m.start)
       if (m.startOffset > cursor) {
-        children.add(TextSpan(
-          text: text.substring(cursor, m.startOffset),
-          style: style,
-        ));
+        children.addAll(spansForRange(cursor, m.startOffset));
       }
       // 高亮区间 (m.start → m.end): 相同词颜色更淡
       final isSameWord = m.id.startsWith('hl-same-');
       final baseColor = m.color.color;
       final alpha = isSameWord ? (m.color.alpha * 0.6) : m.color.alpha;
-      children.add(TextSpan(
-        text: text.substring(m.startOffset, m.endOffset),
-        style: (style ?? const TextStyle()).copyWith(
-          backgroundColor: baseColor.withValues(alpha: alpha),
+      children.addAll(
+        spansForRange(
+          m.startOffset,
+          m.endOffset,
+          background: baseColor.withValues(alpha: alpha),
         ),
-      ));
+      );
       cursor = m.endOffset;
     }
     // 尾部普通区间
     if (cursor < text.length) {
-      children.add(TextSpan(
-        text: text.substring(cursor),
-        style: style,
-      ));
+      children.addAll(spansForRange(cursor, text.length));
     }
 
     return TextSpan(style: style, children: children);
