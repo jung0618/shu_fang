@@ -1,5 +1,6 @@
 import 'package:flutter/material.dart';
 import 'practice_source_details.dart';
+import 'practice_learning_details.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../services/editor_request_lease.dart';
@@ -142,7 +143,9 @@ class _HistoryState extends State<WritingPracticeHistoryDialog> {
       builder:
           (context) => AlertDialog(
             title: const Text('撤销这项作品偏好？'),
-            content: Text('“${item.text}”将不再用于之后的新练笔。已经生成的反馈与练习记录仍保留当时的偏好快照。'),
+            content: Text(
+              '“${item.text}”将不再用于之后的新写作请求。已经生成的反馈与练习记录仍保留当时的偏好快照。',
+            ),
             actions: [
               TextButton(
                 onPressed: () => Navigator.pop(context, false),
@@ -365,6 +368,14 @@ class _HistoryState extends State<WritingPracticeHistoryDialog> {
           isCurrent: widget.isCurrent,
         ),
       if (record.reflection.isNotEmpty) _section('我的反思', record.reflection),
+      PracticeLearningDetails(
+        key: ValueKey('learning-${record.id}'),
+        root: widget.root,
+        book: widget.book,
+        caseId: record.id,
+        preferenceVersion: _preferences?.version,
+        isCurrent: widget.isCurrent,
+      ),
       const Text('希望后续继续遵循某项选择时，请用自己的话填写，再明确确认。仅对这部作品生效。'),
       Align(
         alignment: Alignment.centerLeft,
@@ -408,7 +419,7 @@ class _HistoryState extends State<WritingPracticeHistoryDialog> {
       children: [
         const Padding(
           padding: EdgeInsets.symmetric(vertical: 12),
-          child: Text('仅用于新发起的选段练笔。本次意图与作品目标优先，冲突留给你决定。撤销会保留历史依据。'),
+          child: Text('用于后续讨论、快捷写作与选段练笔。本次意图与作品目标优先，冲突留给你决定。撤销会保留历史依据。'),
         ),
         Text('生效中：${preferences.active.length}/8'),
         if (preferences.items.isEmpty) const Text('还没有确认的偏好。可以从练习回顾中添加。'),
@@ -420,7 +431,7 @@ class _HistoryState extends State<WritingPracticeHistoryDialog> {
                 crossAxisAlignment: CrossAxisAlignment.start,
                 children: [
                   SelectableText(item.text),
-                  Text(item.active ? '作者已确认' : '已撤销，后续新练笔不使用'),
+                  Text(item.active ? '作者已确认' : '已撤销，后续新请求不使用'),
                   Wrap(
                     spacing: 8,
                     children: [
@@ -471,7 +482,9 @@ class _ConfirmationState extends State<_PreferenceConfirmation> {
         child: Column(
           mainAxisSize: MainAxisSize.min,
           children: [
-            Text('只应用于《${widget.book}》的后续新练笔。请说明希望保留的写法，以及适用的情境；以后可撤销。'),
+            Text(
+              '只应用于《${widget.book}》的后续讨论、快捷写作与选段练笔。请说明希望保留的写法，以及适用的情境；以后可撤销。',
+            ),
             TextField(
               key: const ValueKey('preference-text'),
               controller: _text,

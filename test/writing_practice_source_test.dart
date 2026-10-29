@@ -7,6 +7,7 @@ import 'package:flutter_test/flutter_test.dart';
 import 'package:shufang_flutter/services/chapter_save_queue.dart';
 import 'package:shufang_flutter/services/direct_llm_client.dart';
 import 'package:shufang_flutter/services/editor_context_capture.dart';
+import 'package:shufang_flutter/services/practice_learning_view.dart';
 import 'package:shufang_flutter/services/writing_assistant.dart';
 import 'package:shufang_flutter/services/writing_context.dart';
 import 'package:shufang_flutter/services/writing_practice.dart';
@@ -16,6 +17,7 @@ import 'package:shufang_flutter/services/writing_request_ledger.dart';
 import 'package:shufang_flutter/store/editor_store.dart';
 import 'package:shufang_flutter/store/local_data_source.dart';
 import 'package:shufang_flutter/widgets/practice_source_details.dart';
+import 'package:shufang_flutter/widgets/practice_learning_details.dart';
 
 import 'support/practice_fixture.dart';
 
@@ -234,6 +236,43 @@ void main() {
       );
       expect(first.request.requestId, isNot(review.request.requestId));
       expect(first.reviewedSha256, isNot(review.reviewedSha256));
+      final view = await PracticeLearningView.load(
+        root.path,
+        source.book,
+        recalled.id,
+      );
+      expect(view.candidates.map((item) => item.hasStoredSource), [true, true]);
+      expect(view.candidates.map((item) => item.fromRevision), [false, true]);
+      expect(view.confirmed, isEmpty);
+      await tester.pumpWidget(
+        MaterialApp(
+          home: Scaffold(
+            body: SingleChildScrollView(
+              child: PracticeLearningDetails(
+                root: root.path,
+                book: source.book,
+                caseId: recalled.id,
+                preferenceVersion: 0,
+                isCurrent: () => true,
+              ),
+            ),
+          ),
+        ),
+      );
+      await tester.tap(find.text('这次练笔留下了什么'));
+      await tester.pump();
+      final deadline = DateTime.now().add(const Duration(seconds: 6));
+      while (find.byType(LinearProgressIndicator).evaluate().isNotEmpty) {
+        if (DateTime.now().isAfter(deadline)) {
+          throw StateError('Learning view did not settle');
+        }
+        await Future<void>.delayed(const Duration(milliseconds: 10));
+        await tester.pump(const Duration(milliseconds: 16));
+      }
+      await tester.pumpAndSettle();
+      expect(find.textContaining('已保存调用关联，原记录待核对'), findsNWidgets(2));
+      expect(find.textContaining('已核验'), findsNothing);
+      await tester.pumpWidget(const SizedBox());
       expect(
         (await WritingPreferenceStore.load(root.path, source.book)).active,
         isEmpty,

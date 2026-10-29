@@ -107,7 +107,7 @@ void main() {
               find.text('确认撤销').evaluate().isEmpty,
         );
         expect(find.text('生效中：0/8'), findsOneWidget);
-        expect(find.text('已撤销，后续新练笔不使用'), findsOneWidget);
+        expect(find.text('已撤销，后续新请求不使用'), findsOneWidget);
         expect(
           (await WritingPreferenceStore.load(directory.path, '测试作品')).active,
           isEmpty,
