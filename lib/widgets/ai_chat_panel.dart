@@ -87,44 +87,65 @@ class AiChatPanelState extends ConsumerState<AiChatPanel> {
     final text = _inputCtrl.text.trim();
     if (text.isEmpty || _sending) return;
     _requestLease = EditorRequestLease(ref);
-    late WritingContextPlan plan;
-    try {
-      final source = EditorSourceSnapshot.capture(ref);
-      final cmd = parseSlashCommand(text);
-      plan =
-          cmd == null
-              ? source.plan(
-                request: text,
-                budget: ref.read(aiContextStrategyProvider).maxChars,
-                history: [
-                  for (final m in ref.read(aiMessagesProvider))
-                    if (m.includeInContext)
-                      {'role': m.role, 'content': m.content},
-                ],
-              )
-              : buildSlashContext(ref, source, cmd);
-    } catch (error) {
-      ScaffoldMessenger.of(
-        context,
-      ).showSnackBar(SnackBar(content: Text('$error')));
-      return;
-    }
-    final model = ref.read(selectedModelProvider);
-    final useEngine = apiClient.supports('context_feedback');
-    _appendMessage(ChatMessage(role: 'user', content: text));
-    _appendMessage(
-      ChatMessage(role: 'assistant', content: '', includeInContext: false),
-    );
-    _inputCtrl.clear();
     setState(() {
       _sending = true;
       _receivedContent = false;
-      _contextDescription = '上次请求 · ${plan.description}';
     });
-    ref.read(aiStreamingProvider.notifier).state = '';
+    var started = false;
     var acc = '';
     var reasoning = '';
     try {
+      final source = EditorSourceSnapshot.capture(ref);
+      final cmd = parseSlashCommand(text);
+      late WritingContextPlan plan;
+      var historyScopeChanged = false;
+      if (cmd == null) {
+        final budget = ref.read(aiContextStrategyProvider).maxChars;
+        final direction = await source.loadDirection();
+        if (!_requestIsCurrent) return;
+        final messages = ref.read(aiMessagesProvider);
+        final history = ChatMessage.recentContext(
+          messages,
+          directionKey: direction.historyKey,
+        );
+        historyScopeChanged =
+            history.length < messages.where((m) => m.includeInContext).length;
+        plan = source.plan(
+          request: text,
+          budget: budget,
+          history: history,
+          direction: direction,
+        );
+      } else {
+        plan = await buildSlashContext(ref, source, cmd);
+      }
+      if (!_requestIsCurrent) return;
+      final model = ref.read(selectedModelProvider);
+      final useEngine = apiClient.supports('context_feedback');
+      _appendMessage(
+        ChatMessage(
+          role: 'user',
+          content: text,
+          directionKey: plan.directionKey,
+        ),
+      );
+      _appendMessage(
+        ChatMessage(
+          role: 'assistant',
+          content: '',
+          includeInContext: false,
+          directionKey: plan.directionKey,
+        ),
+      );
+      started = true;
+      // Preserve anything the author typed while the direction file loaded.
+      if (_inputCtrl.text.trim() == text) _inputCtrl.clear();
+      setState(() {
+        _contextDescription =
+            '上次请求 · ${plan.description}'
+            '${historyScopeChanged ? "作者方向变更前的对话未发送，原记录仍可查看。" : ""}';
+      });
+      ref.read(aiStreamingProvider.notifier).state = '';
       await for (final event in WritingAssistant.stream(
         plan: plan,
         model: model,
@@ -156,12 +177,21 @@ class AiChatPanelState extends ConsumerState<AiChatPanel> {
         ref.read(companionControllerProvider).setStateExt(CompanionState.happy);
       }
     } catch (error) {
+      if (!mounted) return;
       if (_requestIsCurrent) {
-        ref.read(companionControllerProvider).setStateExt(CompanionState.error);
-        _updateLastAssistant(
-          '${acc.isEmpty ? "" : "$acc\n\n"}生成中断：$error',
-          reasoning,
-        );
+        if (started) {
+          ref
+              .read(companionControllerProvider)
+              .setStateExt(CompanionState.error);
+          _updateLastAssistant(
+            '${acc.isEmpty ? "" : "$acc\n\n"}生成中断：$error',
+            reasoning,
+          );
+        } else {
+          ScaffoldMessenger.of(
+            context,
+          ).showSnackBar(SnackBar(content: Text('未发送：$error')));
+        }
       }
     } finally {
       if (_requestIsCurrent) {

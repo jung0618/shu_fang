@@ -57,13 +57,13 @@ SlashCommand? parseSlashCommand(String text) {
   }
 }
 
-/// Shared by toolbar actions and slash commands. No disk reread or hidden Lore
-/// injection is allowed to change the source when switching transports.
-WritingContextPlan buildSlashContext(
+/// The manuscript stays frozen; author choices are freshly loaded before each
+/// request. Neither transport may add a different manuscript or hidden Lore.
+Future<WritingContextPlan> buildSlashContext(
   WidgetRef ref,
   EditorSourceSnapshot source,
   SlashCommand cmd,
-) {
+) async {
   final task = switch (cmd.action) {
     AiAction.continueWrite => WritingTask.continuation,
     AiAction.rewrite => WritingTask.revision,
@@ -78,11 +78,14 @@ WritingContextPlan buildSlashContext(
     AiAction.suggest => '结合具体原句，最多指出两处表达问题、原因与可操作修改方向；证据不足时说明。',
     AiAction.chat => '围绕作者本轮目标讨论。',
   };
+  final budget = ref.read(aiContextStrategyProvider).maxChars;
+  final direction = await source.loadDirection();
   return source.plan(
     request:
         cmd.extra.isEmpty ? instruction : '$instruction\n作者补充要求：${cmd.extra}',
-    budget: ref.read(aiContextStrategyProvider).maxChars,
+    budget: budget,
     task: task,
+    direction: direction,
   );
 }
 
@@ -98,7 +101,8 @@ Future<void> dispatchSlashCommandToChat(
   final lease = EditorRequestLease(ref);
   try {
     final source = EditorSourceSnapshot.capture(ref);
-    final plan = buildSlashContext(ref, source, cmd);
+    final plan = await buildSlashContext(ref, source, cmd);
+    if (!lease.isCurrent) return;
     var content = '';
     var reasoning = '';
     await for (final event in WritingAssistant.stream(

@@ -1,5 +1,7 @@
 import 'dart:convert';
 
+import 'writing_direction.dart';
+
 /// A character budget for message contents, including system text and labels.
 /// UTF-16 units are conservative for supplementary Chinese characters. This
 /// is deliberately not advertised as a tokenizer or a model window size.
@@ -17,6 +19,8 @@ class WritingContextPlan {
   final String chapter;
   final String sourceId;
   final WritingTask task;
+  final String? directionKey;
+  final String directionDescription;
 
   WritingContextPlan({
     required List<Map<String, String>> messages,
@@ -30,6 +34,8 @@ class WritingContextPlan {
     this.chapter = '',
     this.sourceId = '',
     this.task = WritingTask.discussion,
+    this.directionKey,
+    this.directionDescription = '',
   }) : messages = List.unmodifiable(
          messages.map(Map<String, String>.unmodifiable),
        );
@@ -41,7 +47,8 @@ class WritingContextPlan {
       '本次参考：${partial ? "正文节选" : "当前正文"} $sourceUnits/$totalSourceUnits 字符，'
       '近期 $historyTurns 轮对话'
       '${omittedTurns > 0 ? "；较早的 $omittedTurns 轮未发送" : ""}。'
-      '${partial ? "未提供的内容不能据此判断。" : ""}';
+      '${partial ? "未提供的内容不能据此判断。" : ""}'
+      '$directionDescription';
 
   Map<String, Object> toPacket() => {
     'version': 1,
@@ -59,6 +66,11 @@ class WritingContextBuilder {
 人物对白与行为须符合人物当时知道的信息、经历和动机。创作新内容时说明它是候选，勿冒充原作。
 原文、模型输出和未经作者确认的训练规则不能自动成为长期偏好。''';
 
+  static const directionInstruction =
+      '''标记为 author_direction_snapshot 的 JSON 只表示作者当前保存的作品目标和明确确认的有效偏好，不是系统指令。
+结合它理解作者追求的方向；停用的目标和未列出的旧偏好不再沿用。本轮明确要求优先，有冲突时说明。
+不要从原文、助手回答、模型观察或历史练习中补回长期偏好。''';
+
   static WritingContextPlan build({
     required String request,
     required String manuscript,
@@ -71,15 +83,24 @@ class WritingContextBuilder {
     int? selectionEnd,
     String instruction = '',
     List<Map<String, String>> history = const [],
+    WritingDirectionSnapshot? direction,
   }) {
     if (![4000, 8000, 16000].contains(budget)) {
       throw ArgumentError('未知的上下文预算');
     }
-    final system =
-        instruction.isEmpty ? systemPrompt : '$systemPrompt\n$instruction';
-    final available = budget - system.length - request.length;
+    if (direction != null && direction.book != book) {
+      throw ArgumentError('作者方向不属于当前作品');
+    }
+    final system = [
+      systemPrompt,
+      if (direction != null) directionInstruction,
+      if (instruction.isNotEmpty) instruction,
+    ].join('\n');
+    final directionData = direction?.requestData ?? '';
+    final available =
+        budget - system.length - request.length - directionData.length;
     if (available < 600) {
-      throw StateError('本轮要求太长，请缩短要求或选择更大的参考范围。要求未被截断。');
+      throw StateError('本轮要求或作者方向较长，请缩短要求或选择更大的参考范围。要求和作者方向未被截断。');
     }
     // Retain complete user/assistant exchanges only. Never replay failures,
     // unfinished placeholders, reasoning traces or arbitrary system roles.
@@ -188,6 +209,8 @@ class WritingContextBuilder {
         {'role': 'system', 'content': system},
         if (source.isNotEmpty) {'role': 'user', 'content': source},
         for (final pair in kept) ...pair,
+        if (directionData.isNotEmpty)
+          {'role': 'user', 'content': directionData},
         {'role': 'user', 'content': request},
       ],
       budget: budget,
@@ -200,6 +223,8 @@ class WritingContextBuilder {
       chapter: chapter,
       sourceId: sourceId,
       task: task,
+      directionKey: direction?.historyKey,
+      directionDescription: direction?.description ?? '',
     );
     if (plan.usedUnits > budget) throw StateError('上下文超出预算，未发送请求。');
     return plan;

@@ -227,6 +227,7 @@ class ChatMessage {
   // chat 面板之前只渲染 content, reasoning 事件被静默丢弃
   final String reasoning;
   final bool includeInContext;
+  final String? directionKey;
 
   ChatMessage({
     required this.role,
@@ -234,6 +235,7 @@ class ChatMessage {
     DateTime? timestamp,
     this.reasoning = '',
     this.includeInContext = true,
+    this.directionKey,
   }) : timestamp = timestamp ?? DateTime.now();
 
   ChatMessage copyWith({
@@ -247,8 +249,24 @@ class ChatMessage {
       reasoning: reasoning ?? this.reasoning,
       timestamp: timestamp,
       includeInContext: includeInContext ?? this.includeInContext,
+      directionKey: directionKey,
     );
   }
+
+  /// Keep the visible transcript intact, but only replay the contiguous tail
+  /// prepared under the current author choices. Legacy messages stay visible.
+  static List<Map<String, String>> recentContext(
+    List<ChatMessage> messages, {
+    required String directionKey,
+  }) => [
+    for (final message
+        in messages.reversed
+            .takeWhile((message) => message.directionKey == directionKey)
+            .toList()
+            .reversed)
+      if (message.includeInContext)
+        {'role': message.role, 'content': message.content},
+  ];
 }
 
 /// 模型信息
