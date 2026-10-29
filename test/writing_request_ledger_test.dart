@@ -42,6 +42,65 @@ void main() {
 
   Future<WritingRequestRecord> latest() async =>
       (await WritingRequestLedger.read(root.path)).records.first;
+
+  test(
+    'engine receipt keeps matching evidence only, with unknown settlement',
+    () async {
+      final run = await WritingRequestLedger.begin(
+        root: root.path,
+        plan: requestPlan(),
+        model: 'synthetic',
+        useEngine: true,
+      );
+      await run.dispatch();
+      await run.finish(
+        'completed',
+        output: '模拟',
+        receipt: {
+          'server_request': {
+            'request_id': run.id,
+            'input_sha256': 'a' * 64,
+            'state': 'completed',
+            'settlement': 'paid',
+            'secret': 'must-not-persist',
+          },
+        },
+      );
+      final record = await latest();
+      expect(record.result['server_request'], {
+        'request_id': run.id,
+        'input_sha256': 'a' * 64,
+        'state': 'completed',
+        'settlement': 'unknown',
+      });
+      expect(record.result['cost'], isNull);
+      expect(
+        await run.file.readAsString(),
+        isNot(contains('must-not-persist')),
+      );
+    },
+  );
+
+  test('foreign server receipt cannot attach to local request', () async {
+    final run = await WritingRequestLedger.begin(
+      root: root.path,
+      plan: requestPlan(),
+      model: 'synthetic',
+      useEngine: true,
+    );
+    await run.dispatch();
+    await run.finish(
+      'failed',
+      receipt: {
+        'server_request': {
+          'request_id': 'other',
+          'input_sha256': 'a' * 64,
+          'state': 'completed',
+        },
+      },
+    );
+    expect((await latest()).result.containsKey('server_request'), isFalse);
+  });
   Stream<DirectLlmEvent> run(
     WritingTransport transport, {
     bool engine = true,

@@ -23,6 +23,8 @@ class ApiRoutes {
   static const String authToken = '/api/auth/token';
   static const String ping = '/api/ping';
   static const String engineCapabilities = '/api/engine/capabilities';
+  static String engineRequest(String requestId) =>
+      '/api/engine/requests/${Uri.encodeComponent(requestId)}';
   static const String models = '/api/models';
   static const String commands = '/api/commands';
 

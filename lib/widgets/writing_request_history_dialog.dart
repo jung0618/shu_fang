@@ -2,13 +2,19 @@ import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 
 import '../services/writing_request_ledger.dart';
+import '../services/engine_request_status.dart';
 import '../store/local_data_source.dart';
 
 /// Read-only evidence. There is deliberately no replay button: a missing reply
 /// or unknown bill must never silently trigger a second paid generation.
 class WritingRequestHistoryDialog extends StatefulWidget {
   final String root;
-  const WritingRequestHistoryDialog({super.key, required this.root});
+  final Future<EngineRequestStatus> Function(String)? requestLookup;
+  const WritingRequestHistoryDialog({
+    super.key,
+    required this.root,
+    this.requestLookup,
+  });
 
   @override
   State<WritingRequestHistoryDialog> createState() => _HistoryState();
@@ -155,7 +161,16 @@ class _HistoryState extends State<WritingRequestHistoryDialog> {
                                 ],
                               ),
                             ),
-                          for (final record in _records) _RequestRow(record),
+                          for (final record in _records)
+                            _RequestRow(
+                              key: ValueKey(record.id),
+                              record: record,
+                              root: widget.root,
+                              revision: _revision,
+                              lookup:
+                                  widget.requestLookup ??
+                                  EngineRequestStatus.lookup,
+                            ),
                           if (_cursor != null)
                             Padding(
                               padding: const EdgeInsets.only(top: 16),
@@ -194,12 +209,73 @@ class _Notice extends StatelessWidget {
   );
 }
 
-class _RequestRow extends StatelessWidget {
+class _RequestRow extends StatefulWidget {
   final WritingRequestRecord record;
-  const _RequestRow(this.record);
+  final String root;
+  final int revision;
+  final Future<EngineRequestStatus> Function(String) lookup;
+  const _RequestRow({
+    super.key,
+    required this.record,
+    required this.root,
+    required this.revision,
+    required this.lookup,
+  });
+
+  @override
+  State<_RequestRow> createState() => _RequestRowState();
+}
+
+class _RequestRowState extends State<_RequestRow> {
+  bool _checking = false;
+  String? _serverMessage;
+
+  bool get _sameWorkspace =>
+      widget.revision == localDataSource.sessionRevision &&
+      widget.root == localDataSource.storageRoot;
+
+  Future<void> _checkServer() async {
+    if (!_sameWorkspace) {
+      setState(() => _serverMessage = '工作区已切换，请关闭后重新查看。');
+      return;
+    }
+    setState(() {
+      _checking = true;
+      _serverMessage = null;
+    });
+    try {
+      final result = await widget.lookup(widget.record.id);
+      if (!mounted) return;
+      if (!_sameWorkspace) throw StateError('工作区已切换，原核查结果已丢弃。');
+      final saved = widget.record.result['server_request'];
+      if (result.requestId != widget.record.id ||
+          (saved is Map && saved['input_sha256'] != result.inputSha256)) {
+        throw StateError('引擎记录与原请求不一致，请保留记录核查。');
+      }
+      setState(
+        () =>
+            _serverMessage =
+                '${result.description}'
+                '${result.ownerIsCurrentInstance ? '' : '\n来自此前的引擎实例；该实例是否仍在执行尚未确认。'}',
+      );
+    } catch (error) {
+      if (mounted) {
+        setState(
+          () =>
+              _serverMessage =
+                  error is StateError
+                      ? error.message
+                      : '暂时无法核查引擎记录；原记录保留，不会重新生成。',
+        );
+      }
+    } finally {
+      if (mounted) setState(() => _checking = false);
+    }
+  }
 
   @override
   Widget build(BuildContext context) {
+    final record = widget.record;
     final theme = Theme.of(context);
     final meta = record.meta;
     final result = record.result;
@@ -271,6 +347,19 @@ class _RequestRow extends StatelessWidget {
                   '请求模型：${meta['requested_model']}\n服务报告模型：${result['observed_model'] ?? '未提供'}\n通道：${meta['route'] == 'engine' ? '本机引擎' : '已配置的直连服务'}\n参考范围：${meta['source_units']}/${meta['total_source_units']} 字符\n上下文预算：${meta['used_units']}/${meta['budget_units']} UTF-16 单位\n未发送的较早对话：${meta['omitted_turns']} 轮',
                   style: theme.textTheme.bodySmall,
                 ),
+                if (meta['route'] == 'engine') ...[
+                  const SizedBox(height: 12),
+                  if (_serverMessage != null)
+                    Text(_serverMessage!, style: theme.textTheme.bodySmall),
+                  Align(
+                    alignment: Alignment.centerLeft,
+                    child: TextButton.icon(
+                      onPressed: _checking ? null : _checkServer,
+                      icon: const Icon(Icons.fact_check_outlined, size: 16),
+                      label: Text(_checking ? '正在核查…' : '核查引擎记录'),
+                    ),
+                  ),
+                ],
                 const SizedBox(height: 12),
                 SelectableText(
                   '请求编号：${record.id}\n服务请求编号：${result['provider_request_id'] ?? '未提供'}\n输入摘要：${meta['context_sha256']}',

@@ -197,12 +197,37 @@ class WritingRequestRun {
         'output_units': output.length,
         'output_sha256': sha256.convert(utf8.encode(output)).toString(),
         ...providerReceipt(receipt),
+        if (_serverReceipt(receipt) case final server?)
+          'server_request': server,
         // A completed reply does not establish its price or author acceptance.
         'settlement': 'unknown', 'cost': null, 'currency': null,
       });
     } finally {
       WritingRequestLedger._active.remove(id);
     }
+  }
+
+  Map<String, dynamic>? _serverReceipt(Map<String, dynamic> raw) {
+    final server = raw['server_request'];
+    if (server is! Map ||
+        server['request_id'] != id ||
+        server['input_sha256'] is! String ||
+        !RegExp(r'^[a-f0-9]{64}$').hasMatch(server['input_sha256']) ||
+        !const {
+          'admitted',
+          'dispatching',
+          'completed',
+          'failed',
+          'interrupted',
+        }.contains(server['state'])) {
+      return null;
+    }
+    return {
+      'request_id': id,
+      'input_sha256': server['input_sha256'],
+      'state': server['state'],
+      'settlement': 'unknown',
+    };
   }
 
   /// Only explicit provider counts survive. Invalid/partial reports never

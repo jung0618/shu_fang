@@ -1,4 +1,5 @@
 import 'dart:io';
+import 'dart:async';
 import 'dart:ui' as ui;
 
 import 'package:flutter/material.dart';
@@ -6,6 +7,7 @@ import 'package:flutter/rendering.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:shufang_flutter/services/writing_request_ledger.dart';
+import 'package:shufang_flutter/services/engine_request_status.dart';
 import 'package:shufang_flutter/store/local_data_source.dart';
 import 'package:shufang_flutter/theme/theme.dart';
 import 'package:shufang_flutter/widgets/writing_request_history_dialog.dart';
@@ -28,6 +30,7 @@ void main() {
     Brightness brightness = Brightness.light,
     double width = 940,
     double scale = 1,
+    Future<EngineRequestStatus> Function(String)? requestLookup,
   }) async {
     tester.view.physicalSize = Size(width, 1000);
     tester.view.devicePixelRatio = 1;
@@ -66,7 +69,12 @@ void main() {
                 ).copyWith(textScaler: TextScaler.linear(scale)),
                 child: child!,
               ),
-          home: Scaffold(body: WritingRequestHistoryDialog(root: root.path)),
+          home: Scaffold(
+            body: WritingRequestHistoryDialog(
+              root: root.path,
+              requestLookup: requestLookup,
+            ),
+          ),
         ),
       ),
     );
@@ -88,6 +96,93 @@ void main() {
       await mount(tester);
       expect(find.text('还没有写作调用'), findsOneWidget);
       expect(find.text('重试'), findsNothing);
+      expect(tester.takeException(), isNull);
+      await tester.pumpWidget(const SizedBox());
+    });
+  });
+
+  testWidgets(
+    'explicit query is read-only and stays separate from local failure',
+    (tester) async {
+      await tester.runAsync(() async {
+        final run = await WritingRequestLedger.begin(
+          root: root.path,
+          plan: requestPlan(),
+          model: 'synthetic',
+          useEngine: true,
+        );
+        await run.dispatch();
+        await run.finish('interrupted');
+        var calls = 0;
+        await mount(
+          tester,
+          requestLookup: (id) async {
+            calls++;
+            return EngineRequestStatus.fromJson({
+              'schema_version': 1,
+              'request_id': id,
+              'input_sha256': 'a' * 64,
+              'state': 'completed',
+              'owner_is_current_instance': false,
+              'retry_allowed': false,
+              'settlement': 'unknown',
+            }, requestId: id);
+          },
+        );
+        expect(calls, 0);
+        await tester.tap(find.byType(ExpansionTile));
+        await tester.pumpAndSettle();
+        await tester.ensureVisible(find.text('核查引擎记录'));
+        await tester.tap(find.text('核查引擎记录'));
+        await tester.pumpAndSettle();
+        expect(calls, 1);
+        expect(find.textContaining('引擎已收齐回复'), findsOneWidget);
+        expect(find.text('本地接收已中断'), findsOneWidget);
+        expect(
+          (await WritingRequestLedger.read(root.path)).records.single.state,
+          'interrupted',
+        );
+        expect(find.text('重新生成'), findsNothing);
+        expect(tester.takeException(), isNull);
+        await tester.pumpWidget(const SizedBox());
+      });
+    },
+  );
+
+  testWidgets('query result from previous workspace is discarded', (
+    tester,
+  ) async {
+    await tester.runAsync(() async {
+      final run = await WritingRequestLedger.begin(
+        root: root.path,
+        plan: requestPlan(),
+        model: 'synthetic',
+        useEngine: true,
+      );
+      await run.dispatch();
+      await run.finish('failed');
+      final pending = Completer<EngineRequestStatus>();
+      await mount(tester, requestLookup: (_) => pending.future);
+      await tester.tap(find.byType(ExpansionTile));
+      await tester.pumpAndSettle();
+      await tester.ensureVisible(find.text('核查引擎记录'));
+      await tester.tap(find.text('核查引擎记录'));
+      await tester.pump();
+      localDataSource.selectWorkspace(root.path, isPrimary: false);
+      pending.complete(
+        EngineRequestStatus.fromJson({
+          'schema_version': 1,
+          'request_id': run.id,
+          'input_sha256': 'a' * 64,
+          'state': 'completed',
+          'owner_is_current_instance': true,
+          'retry_allowed': false,
+          'settlement': 'unknown',
+        }, requestId: run.id),
+      );
+      await tester.pumpAndSettle();
+      expect(find.textContaining('原核查结果已丢弃'), findsOneWidget);
+      expect(find.textContaining('引擎已收齐回复'), findsNothing);
       expect(tester.takeException(), isNull);
       await tester.pumpWidget(const SizedBox());
     });
