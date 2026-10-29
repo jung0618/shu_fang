@@ -345,7 +345,7 @@ void main() {
           preferences: snapshot,
         );
         final record = jsonDecode(await File(path).readAsString());
-        expect(record['schema_version'], 3);
+        expect(record['schema_version'], 4);
         expect(record['author_goal_snapshot'], first.toJson());
         expect(record['author_preferences_snapshot'], snapshot.toJson());
         final recalled = await WritingPracticeHistory.loadCase(

@@ -11,10 +11,12 @@ import '../services/writing_assistant.dart';
 import '../services/writing_goal.dart';
 import '../services/writing_practice.dart';
 import '../services/writing_preferences.dart';
+import '../services/writing_request_ledger.dart';
 import '../store/editor_store.dart';
 import '../store/local_data_source.dart';
 import 'writing_goal_panel.dart';
 import 'writing_practice_history_dialog.dart';
+import 'practice_source_details.dart';
 
 void showWritingPracticeDialog(BuildContext context, WidgetRef ref) {
   try {
@@ -53,6 +55,8 @@ class _WritingPracticeDialogState extends ConsumerState<WritingPracticeDialog> {
   PracticeGoal _goal = PracticeGoal.dialogue;
   PracticeFeedback? _feedback;
   PracticeFeedback? _revisionFeedback;
+  PracticeFeedbackSource? _feedbackSource;
+  PracticeFeedbackSource? _revisionFeedbackSource;
   String? _feedbackModel;
   String? _revisionFeedbackModel;
   String? _error;
@@ -196,10 +200,12 @@ class _WritingPracticeDialogState extends ConsumerState<WritingPracticeDialog> {
         budget: ref.read(aiContextStrategyProvider).maxChars,
       );
       var response = '';
+      WritingRequestCompletion? completed;
       await for (final event in WritingAssistant.stream(
         plan: plan,
         model: model,
         useEngine: apiClient.supports('context_feedback'),
+        onCompleted: (value) => completed = value,
       )) {
         if (!mounted || !lease.isCurrent) return;
         if (event.type == DirectLlmEventType.content) response += event.content;
@@ -213,14 +219,32 @@ class _WritingPracticeDialogState extends ConsumerState<WritingPracticeDialog> {
         response,
         compare ? revision : _passage,
       );
+      if (completed == null) throw StateError('缺少已落盘的完成记录，未关联反馈。');
+      final provenance = PracticeFeedbackSource.capture(
+        request: completed!,
+        plan: plan,
+        response: response,
+        source: widget.source,
+        goal: goal,
+        intention: intention,
+        passage: _passage,
+        revision: compare ? revision : null,
+        feedback: feedback,
+        authorGoal: authorGoal,
+        preferences: preferences,
+      );
       setState(() {
         if (compare) {
           _revisionFeedback = feedback;
           _reviewedRevision = revision;
           _revisionFeedbackModel = model;
+          _revisionFeedbackSource = provenance;
         } else {
           _feedback = feedback;
           _revisionFeedback = null;
+          _feedbackSource = provenance;
+          _revisionFeedbackSource = null;
+          _revisionFeedbackModel = null;
           _feedbackModel = model;
           _feedbackAuthorGoal = authorGoal;
           _feedbackPreferences = preferences;
@@ -235,7 +259,7 @@ class _WritingPracticeDialogState extends ConsumerState<WritingPracticeDialog> {
   }
 
   Future<void> _save() async {
-    if (_feedback == null || _saving) return;
+    if (_feedback == null || _busy || _saving) return;
     final lease = EditorRequestLease(ref);
     if (!_sourceIsCurrent ||
         localDataSource.storageRoot != widget.source.root ||
@@ -264,6 +288,11 @@ class _WritingPracticeDialogState extends ConsumerState<WritingPracticeDialog> {
         revisionFeedback:
             _reviewedRevision == _revision.text ? _revisionFeedback : null,
         revisionFeedbackModel: _revisionFeedbackModel,
+        feedbackSource: _feedbackSource,
+        revisionFeedbackSource:
+            _reviewedRevision == _revision.text
+                ? _revisionFeedbackSource
+                : null,
       );
       if (mounted && lease.isCurrent) setState(() => _savedPath = path);
     } catch (error) {
@@ -419,6 +448,12 @@ class _WritingPracticeDialogState extends ConsumerState<WritingPracticeDialog> {
               if (_busy) const LinearProgressIndicator(),
               if (_feedback != null) ...[
                 ..._cards(context, _feedback!),
+                PracticeSourceDetails(
+                  title: '原稿反馈来源',
+                  root: widget.source.root,
+                  source: _feedbackSource,
+                  isCurrent: () => _sourceIsCurrent && !_busy && !_saving,
+                ),
                 const SizedBox(height: 12),
                 DropdownButtonFormField<String>(
                   value: _decision,
@@ -472,6 +507,12 @@ class _WritingPracticeDialogState extends ConsumerState<WritingPracticeDialog> {
                     _reviewedRevision == _revision.text) ...[
                   const Text('改稿反馈（模型意见）'),
                   ..._cards(context, _revisionFeedback!),
+                  PracticeSourceDetails(
+                    title: '改稿复评来源',
+                    root: widget.source.root,
+                    source: _revisionFeedbackSource,
+                    isCurrent: () => _sourceIsCurrent && !_busy && !_saving,
+                  ),
                 ],
               ],
               if (_error != null)

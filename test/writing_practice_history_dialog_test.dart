@@ -65,7 +65,11 @@ void main() {
         await tester.pumpAndSettle();
         expect(find.text('我的改稿'), findsOneWidget);
         final remember = find.text('记住一项作品偏好');
-        await tester.ensureVisible(remember);
+        await tester.scrollUntilVisible(
+          remember,
+          250,
+          scrollable: find.byType(Scrollable).last,
+        );
         await tester.tap(remember);
         await tester.pumpAndSettle();
         final confirm = find.widgetWithText(FilledButton, '确认并记住');
@@ -123,7 +127,11 @@ void main() {
         await mount(tester, current: () => current);
         await tester.tap(find.text('第一章 · 对白'));
         await tester.pumpAndSettle();
-        await tester.ensureVisible(find.text('记住一项作品偏好'));
+        await tester.scrollUntilVisible(
+          find.text('记住一项作品偏好'),
+          250,
+          scrollable: find.byType(Scrollable).last,
+        );
         await tester.tap(find.text('记住一项作品偏好'));
         await tester.pumpAndSettle();
         await tester.enterText(

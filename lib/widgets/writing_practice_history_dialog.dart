@@ -1,4 +1,5 @@
 import 'package:flutter/material.dart';
+import 'practice_source_details.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../services/editor_request_lease.dart';
@@ -338,6 +339,12 @@ class _HistoryState extends State<WritingPracticeHistoryDialog> {
         ),
       _section('原稿', record.passage),
       ..._feedback('原稿反馈（模型意见）', record.feedback),
+      PracticeSourceDetails(
+        title: '原稿反馈来源',
+        root: widget.root,
+        source: record.feedbackSource,
+        isCurrent: widget.isCurrent,
+      ),
       _section(
         '我的决定',
         {
@@ -350,6 +357,13 @@ class _HistoryState extends State<WritingPracticeHistoryDialog> {
       if (record.revision.isNotEmpty) _section('我的改稿', record.revision),
       if (record.revisionFeedback case final feedback?)
         ..._feedback('改稿反馈（模型意见）', feedback),
+      if (record.revisionFeedback != null)
+        PracticeSourceDetails(
+          title: '改稿复评来源',
+          root: widget.root,
+          source: record.revisionFeedbackSource,
+          isCurrent: widget.isCurrent,
+        ),
       if (record.reflection.isNotEmpty) _section('我的反思', record.reflection),
       const Text('希望后续继续遵循某项选择时，请用自己的话填写，再明确确认。仅对这部作品生效。'),
       Align(

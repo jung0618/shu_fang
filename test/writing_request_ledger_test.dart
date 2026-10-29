@@ -104,11 +104,13 @@ void main() {
   Stream<DirectLlmEvent> run(
     WritingTransport transport, {
     bool engine = true,
+    void Function(WritingRequestCompletion)? onCompleted,
   }) => WritingAssistant.stream(
     plan: requestPlan(),
     model: 'test-requested-model',
     useEngine: engine,
     transportOverride: transport,
+    onCompleted: onCompleted,
   );
 
   test(
@@ -323,6 +325,7 @@ void main() {
     'terminal journal failure is reported without a second provider call',
     () async {
       var calls = 0;
+      var completed = false;
       await expectLater(
         run((receipt) async* {
           calls++;
@@ -334,10 +337,11 @@ void main() {
           await Directory(file.path).create();
           yield reply;
           yield done;
-        }).toList(),
+        }, onCompleted: (_) => completed = true).toList(),
         throwsStateError,
       );
       expect(calls, 1);
+      expect(completed, isFalse);
     },
   );
 

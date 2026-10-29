@@ -1,11 +1,13 @@
 import 'dart:convert';
 import 'dart:io';
+import 'package:crypto/crypto.dart';
 import 'editor_context_capture.dart';
 import 'safe_file_writer.dart';
 import 'storage_paths.dart';
 import 'writing_context.dart';
 import 'writing_goal.dart';
 import 'writing_preferences.dart';
+import 'writing_request_ledger.dart';
 
 enum PracticeGoal {
   dialogue('对白', '让人物说话符合当时的认知、关系和意图'),
@@ -186,6 +188,8 @@ class WritingPracticeStore {
     String? revisionFeedbackModel,
     AuthorWritingGoal? authorGoal,
     WritingPreferences? preferences,
+    PracticeFeedbackSource? feedbackSource,
+    PracticeFeedbackSource? revisionFeedbackSource,
   }) async {
     if (!StoragePaths.validName(source.book) ||
         !StoragePaths.validName(source.chapter)) {
@@ -204,7 +208,7 @@ class WritingPracticeStore {
         '${source.root}${Platform.pathSeparator}books${Platform.pathSeparator}'
         '${source.book}${Platform.pathSeparator}.practice${Platform.pathSeparator}$id.json';
     final record = {
-      'schema_version': 3,
+      'schema_version': 4,
       'id': id,
       'created_at': DateTime.now().toUtc().toIso8601String(),
       'source_id': source.id,
@@ -230,11 +234,190 @@ class WritingPracticeStore {
         'revision_feedback_model': revisionFeedbackModel,
       'evidence_status': 'author_recorded_unassessed',
       'promoted_to_preference': false,
+      'feedback_source': feedbackSource?.toJson(),
+      'revision_feedback_source': revisionFeedbackSource?.toJson(),
     };
+    feedbackSource?.validateCase(record, compare: false);
+    revisionFeedbackSource?.validateCase(record, compare: true);
+    if (feedbackSource != null &&
+        revisionFeedbackSource != null &&
+        feedbackSource.request.requestId ==
+            revisionFeedbackSource.request.requestId) {
+      throw const FormatException('原稿与改稿不能共用一次调用来源');
+    }
     await SafeFileWriter.writeText(
       path,
       const JsonEncoder.withIndent('  ').convert(record),
     );
     return path;
+  }
+}
+
+/// Links parsed feedback to a durable completion without storing the raw reply.
+/// Hashes detect accidental mixing; they are not signatures or proof of quality.
+class PracticeFeedbackSource {
+  final WritingRequestCompletion request;
+  final String reviewedSha256;
+  final String feedbackSha256;
+  final String bindingSha256;
+
+  PracticeFeedbackSource._(
+    this.request,
+    this.reviewedSha256,
+    this.feedbackSha256,
+    this.bindingSha256,
+  );
+
+  static String digest(String value) =>
+      sha256.convert(utf8.encode(value)).toString();
+
+  static String _binding(Map<String, dynamic> data, bool compare) => digest(
+    jsonEncode({
+      'version': 1,
+      for (final key in [
+        'workspace_root',
+        'book',
+        'chapter',
+        'source_id',
+        'source_start',
+        'source_end',
+        'offset_encoding',
+        'passage',
+        'goal',
+        'intention',
+        'author_goal_snapshot',
+        'author_preferences_snapshot',
+      ])
+        key: data[key],
+      'stage': compare ? 'revision' : 'original',
+      if (compare) 'author_revision': data['author_revision'],
+    }),
+  );
+
+  factory PracticeFeedbackSource.capture({
+    required WritingRequestCompletion request,
+    required WritingContextPlan plan,
+    required String response,
+    required EditorSourceSnapshot source,
+    required PracticeGoal goal,
+    required String intention,
+    required String passage,
+    required PracticeFeedback feedback,
+    String? revision,
+    AuthorWritingGoal? authorGoal,
+    WritingPreferences? preferences,
+  }) {
+    final start = source.selectionStart;
+    final end = source.selectionEnd;
+    if (start == null ||
+        end == null ||
+        start < 0 ||
+        end > source.text.length ||
+        end <= start ||
+        source.text.substring(start, end) != passage) {
+      throw const FormatException('选段与本次原稿快照不一致');
+    }
+    final expectedPlan = WritingPracticeContext.build(
+      passage: passage,
+      goal: goal,
+      intention: intention,
+      book: source.book,
+      chapter: source.chapter,
+      sourceId: source.id,
+      budget: plan.budget,
+      revision: revision,
+      authorGoal: authorGoal,
+      preferences: preferences,
+    );
+    if (request.contextSha256 != digest(jsonEncode(plan.toPacket())) ||
+        request.contextSha256 != digest(jsonEncode(expectedPlan.toPacket())) ||
+        request.outputSha256 != digest(response) ||
+        request.outputUnits != response.length ||
+        request.book != plan.book ||
+        request.chapter != plan.chapter ||
+        request.sourceId != plan.sourceId ||
+        request.task != plan.task.name ||
+        jsonEncode(feedback.toJson()) !=
+            jsonEncode(
+              PracticeFeedback.parse(response, revision ?? passage).toJson(),
+            )) {
+      throw const FormatException('反馈与完成调用不匹配，未关联来源');
+    }
+    final data = <String, dynamic>{
+      'workspace_root': source.root,
+      'book': source.book,
+      'chapter': source.chapter,
+      'source_id': source.id,
+      'source_start': source.selectionStart,
+      'source_end': source.selectionEnd,
+      'offset_encoding': 'utf-16',
+      'passage': passage,
+      'goal': goal.name,
+      'intention': intention,
+      'author_goal_snapshot': authorGoal?.toJson(),
+      'author_preferences_snapshot': preferences?.snapshot.toJson(),
+      'author_revision': revision ?? '',
+      'feedback': feedback.toJson(),
+      'model': request.model,
+      if (revision != null) 'revision_feedback': feedback.toJson(),
+      if (revision != null) 'revision_feedback_model': request.model,
+    };
+    final value = PracticeFeedbackSource._(
+      request,
+      digest(revision ?? passage),
+      digest(jsonEncode(feedback.toJson())),
+      _binding(data, revision != null),
+    );
+    value.validateCase(data, compare: revision != null);
+    return value;
+  }
+
+  Map<String, dynamic> toJson() => {
+    'schema_version': 1,
+    'request': request.toJson(),
+    'reviewed_sha256': reviewedSha256,
+    'feedback_sha256': feedbackSha256,
+    'binding_sha256': bindingSha256,
+  };
+
+  factory PracticeFeedbackSource.fromJson(Map<String, dynamic> data) {
+    if (data['schema_version'] != 1 ||
+        data['request'] is! Map<String, dynamic> ||
+        ['reviewed_sha256', 'feedback_sha256', 'binding_sha256'].any(
+          (key) =>
+              data[key] is! String ||
+              !RegExp(r'^[a-f0-9]{64}$').hasMatch(data[key]),
+        )) {
+      throw const FormatException('练笔调用来源格式无效');
+    }
+    return PracticeFeedbackSource._(
+      WritingRequestCompletion.fromJson(data['request']),
+      data['reviewed_sha256'],
+      data['feedback_sha256'],
+      data['binding_sha256'],
+    );
+  }
+
+  void validateCase(Map<String, dynamic> data, {required bool compare}) {
+    final input = data[compare ? 'author_revision' : 'passage'];
+    final feedback = data[compare ? 'revision_feedback' : 'feedback'];
+    if (input is! String ||
+        input.isEmpty ||
+        feedback is! List ||
+        request.root !=
+            Directory(
+              data['workspace_root'] as String,
+            ).resolveSymbolicLinksSync() ||
+        request.book != data['book'] ||
+        request.chapter != data['chapter'] ||
+        request.sourceId !=
+            '${data['source_id']}${compare ? '-revision' : ''}' ||
+        request.task != WritingTask.feedback.name ||
+        request.model != data[compare ? 'revision_feedback_model' : 'model'] ||
+        reviewedSha256 != digest(input) ||
+        feedbackSha256 != digest(jsonEncode(feedback)) ||
+        bindingSha256 != _binding(data, compare)) {
+      throw const FormatException('练笔内容与保存的调用来源不一致，原文件保留');
+    }
   }
 }

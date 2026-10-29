@@ -37,8 +37,7 @@ class WritingRequestLedger {
     await dir.create(recursive: true);
     final file = File('${dir.path}${Platform.pathSeparator}$id.jsonl');
     if (await file.exists()) throw StateError('请求标识冲突，未发送。');
-    final run = WritingRequestRun._(id, file);
-    await run._append('prepared', {
+    final meta = <String, dynamic>{
       'workspace_root': canonicalRoot,
       'book': plan.book,
       'chapter': plan.chapter,
@@ -58,7 +57,9 @@ class WritingRequestLedger {
       'partial': plan.partial,
       'unit': 'utf-16',
       'temperature': 0.7,
-    });
+    };
+    final run = WritingRequestRun._(id, file, meta);
+    await run._append('prepared', meta);
     _active.add(id);
     return run;
   }
@@ -69,17 +70,32 @@ class WritingRequestLedger {
     String root, {
     String? cursor,
     int limit = 30,
+    String? requestId,
   }) async {
     if (limit < 1 ||
         limit > 100 ||
-        (cursor != null && !_idPattern.hasMatch(cursor))) {
+        (cursor != null && !_idPattern.hasMatch(cursor)) ||
+        (requestId != null &&
+            (!_idPattern.hasMatch(requestId) || cursor != null))) {
       throw ArgumentError('请求记录分页范围无效');
     }
     final dir = directory(root);
     if (!await dir.exists()) return WritingRequestPage([], [], null);
     final files = <File>[];
-    await for (final entry in dir.list(followLinks: false)) {
-      if (entry is File && entry.path.endsWith('.jsonl')) files.add(entry);
+    if (requestId != null) {
+      final file = File('${dir.path}${Platform.pathSeparator}$requestId.jsonl');
+      final type = await FileSystemEntity.type(file.path, followLinks: false);
+      if (type == FileSystemEntityType.notFound) {
+        return WritingRequestPage([], [], null);
+      }
+      if (type != FileSystemEntityType.file) {
+        return WritingRequestPage([], ['$requestId：不是普通调用记录文件。'], null);
+      }
+      files.add(file);
+    } else {
+      await for (final entry in dir.list(followLinks: false)) {
+        if (entry is File && entry.path.endsWith('.jsonl')) files.add(entry);
+      }
     }
     String id(File file) =>
         file.uri.pathSegments.last.replaceFirst(RegExp(r'\.jsonl$'), '');
@@ -160,11 +176,12 @@ class WritingRequestLedger {
 class WritingRequestRun {
   final String id;
   final File file;
+  final Map<String, dynamic> _meta;
   int _seq = 0;
   String _state = '';
   bool get dispatched => _state == 'dispatching';
   bool get terminal => ['completed', 'failed', 'interrupted'].contains(_state);
-  WritingRequestRun._(this.id, this.file);
+  WritingRequestRun._(this.id, this.file, this._meta);
 
   static bool _canFollow(dynamic previous, dynamic next) =>
       (previous == 'prepared' &&
@@ -187,13 +204,13 @@ class WritingRequestRun {
 
   Future<void> dispatch() => _append('dispatching', {});
 
-  Future<void> finish(
+  Future<WritingRequestCompletion?> finish(
     String state, {
     String output = '',
     Map<String, dynamic> receipt = const {},
   }) async {
     try {
-      await _append(state, {
+      final result = <String, dynamic>{
         'output_units': output.length,
         'output_sha256': sha256.convert(utf8.encode(output)).toString(),
         ...providerReceipt(receipt),
@@ -201,7 +218,11 @@ class WritingRequestRun {
           'server_request': server,
         // A completed reply does not establish its price or author acceptance.
         'settlement': 'unknown', 'cost': null, 'currency': null,
-      });
+      };
+      await _append(state, result);
+      return state == 'completed'
+          ? WritingRequestCompletion._(id, _meta, result)
+          : null;
     } finally {
       WritingRequestLedger._active.remove(id);
     }
@@ -258,6 +279,93 @@ class WritingRequestRun {
       'usage': counts.isEmpty ? null : counts,
     };
   }
+}
+
+/// A snapshot emitted only after the local completed event has been flushed.
+/// This is a local association, not a provider bill or an author judgement.
+class WritingRequestCompletion {
+  final String requestId;
+  final String contextSha256;
+  final String outputSha256;
+  final int outputUnits;
+  final String root;
+  final String book;
+  final String chapter;
+  final String sourceId;
+  final String task;
+  final String model;
+  final String route;
+
+  WritingRequestCompletion._(
+    this.requestId,
+    Map<String, dynamic> meta,
+    Map<String, dynamic> result,
+  ) : contextSha256 = meta['context_sha256'] as String,
+      outputSha256 = result['output_sha256'] as String,
+      outputUnits = result['output_units'] as int,
+      root = meta['workspace_root'] as String,
+      book = meta['book'] as String,
+      chapter = meta['chapter'] as String,
+      sourceId = meta['source_id'] as String,
+      task = meta['task'] as String,
+      model = meta['requested_model'] as String,
+      route = meta['route'] as String;
+
+  Map<String, dynamic> toJson() => {
+    'request_id': requestId,
+    'context_sha256': contextSha256,
+    'output_sha256': outputSha256,
+    'output_units': outputUnits,
+    'workspace_root': root,
+    'book': book,
+    'chapter': chapter,
+    'source_id': sourceId,
+    'task': task,
+    'requested_model': model,
+    'route': route,
+  };
+
+  factory WritingRequestCompletion.fromJson(Map<String, dynamic> data) {
+    final textLimits = {
+      'workspace_root': 32768,
+      'book': 255,
+      'chapter': 255,
+      'source_id': 300,
+      'requested_model': 200,
+    };
+    if (!WritingRequestLedger._idPattern.hasMatch('${data['request_id']}') ||
+        !['engine', 'direct'].contains(data['route']) ||
+        !WritingTask.values.any((task) => task.name == data['task']) ||
+        data['output_units'] is! int ||
+        data['output_units'] < 1 ||
+        data['output_units'] > 128000 ||
+        ['context_sha256', 'output_sha256'].any(
+          (key) =>
+              data[key] is! String ||
+              !RegExp(r'^[a-f0-9]{64}$').hasMatch(data[key]),
+        ) ||
+        textLimits.entries.any(
+          (entry) =>
+              data[entry.key] is! String ||
+              (data[entry.key] as String).isEmpty ||
+              (data[entry.key] as String).length > entry.value,
+        )) {
+      throw const FormatException('调用来源格式无效');
+    }
+    return WritingRequestCompletion._(data['request_id'], data, data);
+  }
+
+  bool matchesRecord(WritingRequestRecord record) =>
+      !record.damaged &&
+      record.state == 'completed' &&
+      jsonEncode(toJson()) ==
+          jsonEncode(
+            WritingRequestCompletion._(
+              record.id,
+              record.meta,
+              record.result,
+            ).toJson(),
+          );
 }
 
 class WritingRequestRecord {

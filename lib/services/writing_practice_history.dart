@@ -23,6 +23,8 @@ class WritingPracticeCase {
   final PracticeFeedback? revisionFeedback;
   final AuthorWritingGoal? authorGoal;
   final WritingPreferences? preferences;
+  final PracticeFeedbackSource? feedbackSource;
+  final PracticeFeedbackSource? revisionFeedbackSource;
 
   WritingPracticeCase._({
     required this.id,
@@ -40,6 +42,8 @@ class WritingPracticeCase {
     required this.revisionFeedback,
     required this.authorGoal,
     required this.preferences,
+    required this.feedbackSource,
+    required this.revisionFeedbackSource,
   });
 
   factory WritingPracticeCase.fromJson(
@@ -65,7 +69,7 @@ class WritingPracticeCase {
     final decision = field('author_decision', 20);
     final start = data['source_start'];
     final end = data['source_end'];
-    if (![1, 2, 3].contains(data['schema_version']) ||
+    if (![1, 2, 3, 4].contains(data['schema_version']) ||
         data['id'] != id ||
         !PracticePaths.validId(id) ||
         data['book'] != book ||
@@ -116,6 +120,24 @@ class WritingPracticeCase {
                 preferences.items.any((item) => !item.active)))) {
       throw const FormatException('记录中的作者方向范围无效');
     }
+    PracticeFeedbackSource? source(String key, bool compare) {
+      final raw = data[key];
+      if (raw == null) return null;
+      if (data['schema_version'] != 4 || raw is! Map<String, dynamic>) {
+        throw const FormatException('练笔调用来源版本或格式无效');
+      }
+      final value = PracticeFeedbackSource.fromJson(raw);
+      value.validateCase(data, compare: compare);
+      return value;
+    }
+
+    final originalSource = source('feedback_source', false);
+    final revisionSource = source('revision_feedback_source', true);
+    if (originalSource != null &&
+        revisionSource != null &&
+        originalSource.request.requestId == revisionSource.request.requestId) {
+      throw const FormatException('原稿与改稿不能共用一次调用来源');
+    }
     return WritingPracticeCase._(
       id: id,
       createdAt: created,
@@ -135,6 +157,8 @@ class WritingPracticeCase {
               : feedback('revision_feedback', revision),
       authorGoal: authorGoal,
       preferences: preferences,
+      feedbackSource: originalSource,
+      revisionFeedbackSource: revisionSource,
     );
   }
 }

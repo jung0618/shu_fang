@@ -18,6 +18,7 @@ class WritingAssistant {
     required String model,
     required bool useEngine,
     WritingTransport? transportOverride,
+    void Function(WritingRequestCompletion completion)? onCompleted,
   }) async* {
     if (!localDataSource.hasWorkspace) throw StateError('请先选择工作区。');
     final revision = localDataSource.sessionRevision;
@@ -57,12 +58,21 @@ class WritingAssistant {
         }
         if (event.type == DirectLlmEventType.done) {
           if (output.trim().isEmpty) throw StateError('服务未返回有效正文。');
+          WritingRequestCompletion? completion;
           try {
-            await run.finish('completed', output: output, receipt: receipt);
+            completion = await run.finish(
+              'completed',
+              output: output,
+              receipt: receipt,
+            );
           } catch (_) {
             journalFailed = true;
             throw StateError('回复已收到，但完成记录写入失败。请先核查调用记录，避免重复付费。');
           }
+          if (revision != localDataSource.sessionRevision) {
+            throw StateError('工作区已切换，原调用记录已保留，未关联到新工作区。');
+          }
+          onCompleted?.call(completion!);
           yield event;
           return;
         }
