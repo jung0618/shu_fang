@@ -1,0 +1,72 @@
+import 'package:flutter_riverpod/flutter_riverpod.dart';
+
+import '../pages/home_dashboard_data.dart';
+import '../widgets/ai_actions.dart' show aiPanelModeProvider;
+import '../widgets/companion_bubble.dart' show companionBubbleProvider;
+import 'book_manifest_provider.dart';
+import 'editor_store.dart';
+import 'focus_session_provider.dart';
+import 'navigation_store.dart';
+import 'snippets_store.dart';
+import '../services/engine_launcher.dart';
+
+/// Called after a successful saved transition, outside the widget build.
+/// Device preferences and the draft queue have their own lifetimes.
+void resetWorkspaceSession(WidgetRef ref) {
+  EngineLauncher.reset();
+  ref.invalidate(engineStatusProvider);
+  ref.invalidate(engineMessageProvider);
+  clearChatSessions();
+  resetAllSnippets(ref);
+  ref.invalidate(currentBookProvider);
+  ref.invalidate(currentChapterProvider);
+  ref.invalidate(openBuffersProvider);
+  ref.invalidate(activeBufferIndexProvider);
+  ref.invalidate(splitChapterProvider);
+  ref.invalidate(editorTextProvider);
+  ref.invalidate(editorUndoControllerProvider);
+  ref.invalidate(editorControllerProvider);
+  ref.invalidate(pendingInsertProvider);
+  ref.invalidate(pendingChapterRestoreProvider);
+  ref.invalidate(aiMessagesProvider);
+  ref.invalidate(aiStreamingProvider);
+  ref.invalidate(aiActionStateProvider);
+  ref.invalidate(aiPanelModeProvider);
+  ref.invalidate(reviewResultProvider);
+  ref.invalidate(activeReviewQuestionsProvider);
+  ref.invalidate(highlightsProvider);
+  ref.invalidate(sameWordHighlightsProvider);
+  ref.invalidate(activeHighlightColorProvider);
+  ref.invalidate(scrollOffsetProvider);
+  ref.invalidate(viewportRangeProvider);
+  ref.invalidate(searchQueryProvider);
+  ref.invalidate(searchResultsProvider);
+  ref.invalidate(searchLoadingProvider);
+  ref.invalidate(focusModeProvider);
+  ref.invalidate(focusSessionProvider);
+  ref.invalidate(showMinimapProvider);
+  ref.invalidate(appRouteProvider);
+  ref.invalidate(navigationControllerProvider);
+  ref.invalidate(companionBubbleProvider);
+  ref.invalidate(booksProvider);
+  ref.invalidate(chapterContentProvider);
+  ref.invalidate(bookManifestProvider);
+  ref.invalidate(settingsFilesProvider);
+  ref.invalidate(unitBooksProvider);
+  ref.invalidate(unitSettingsProvider);
+  ref.invalidate(unitSetsProvider);
+  ref.invalidate(unitSetDetailProvider);
+  ref.invalidate(unitSetSourcesProvider);
+  ref.invalidate(unitrefContextProvider);
+  ref.invalidate(unitrefChangesProvider);
+  ref.invalidate(unitrefValidateProvider);
+  ref.invalidate(unitrefMatrixProvider);
+  ref.invalidate(outlineProvider);
+  ref.invalidate(loreBuildStatusProvider);
+  ref.invalidate(readinessProvider);
+  ref.invalidate(trainingStatusProvider);
+  ref.invalidate(styleProfileProvider);
+  ref.invalidate(heatmapProvider);
+  ref.invalidate(homeBooksProvider);
+  ref.invalidate(loreProvider);
+}
