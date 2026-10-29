@@ -208,7 +208,7 @@ class WritingPracticeStore {
         '${source.root}${Platform.pathSeparator}books${Platform.pathSeparator}'
         '${source.book}${Platform.pathSeparator}.practice${Platform.pathSeparator}$id.json';
     final record = {
-      'schema_version': 4,
+      'schema_version': PracticePaths.currentCaseSchema,
       'id': id,
       'created_at': DateTime.now().toUtc().toIso8601String(),
       'source_id': source.id,

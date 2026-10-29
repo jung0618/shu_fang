@@ -240,6 +240,23 @@ void main() {
       );
       expect(data['promoted_to_preference'], isFalse);
       expect(data['evidence_status'], 'author_recorded_unassessed');
+      final unchanged = await File(path).readAsBytes();
+      final confirmed = await WritingPreferenceStore.confirm(
+        root: root.path,
+        book: source.book,
+        expectedVersion: 0,
+        sourceCaseId: recalled.id,
+        text: '争执时保留动作里的迟疑',
+      );
+      expect(confirmed.active.single.sourceCaseId, recalled.id);
+      final revoked = await WritingPreferenceStore.revoke(
+        root: root.path,
+        book: source.book,
+        expectedVersion: confirmed.version,
+        id: confirmed.active.single.id,
+      );
+      expect(revoked.active, isEmpty);
+      expect(await File(path).readAsBytes(), unchanged);
     });
   });
 

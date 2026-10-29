@@ -147,6 +147,89 @@ void main() {
   );
 
   test(
+    'every readable case schema permits explicit confirmation and revocation',
+    () async {
+      var version = 0;
+      for (final schema in [1, 2, 3, 4]) {
+        final id = 'practice-${100 + schema}';
+        final file = await writePracticeFixture(
+          directory.path,
+          id: id,
+          schema: schema,
+        );
+        final original = await file.readAsBytes();
+        final record = await WritingPracticeHistory.loadCase(
+          directory.path,
+          '测试作品',
+          id,
+        );
+        final confirmed = await confirm(version: version, id: record.id);
+        expect(confirmed.active.single.sourceCaseId, id);
+        final revoked = await WritingPreferenceStore.revoke(
+          root: directory.path,
+          book: '测试作品',
+          expectedVersion: confirmed.version,
+          id: confirmed.active.single.id,
+        );
+        expect(revoked.active, isEmpty);
+        expect(revoked.items.last.sourceCaseId, id);
+        expect(await file.readAsBytes(), original);
+        version = revoked.version;
+      }
+      expect(version, 8);
+    },
+  );
+
+  test(
+    'unsupported case schema cannot create a preference or rewrite its source',
+    () async {
+      final file = await writePracticeFixture(directory.path, schema: 99);
+      final original = await file.readAsBytes();
+      await expectLater(confirm(), throwsFormatException);
+      expect(
+        await File(
+          WritingPreferenceStore.pathFor(directory.path, '测试作品'),
+        ).exists(),
+        isFalse,
+      );
+      expect(await file.readAsBytes(), original);
+    },
+  );
+
+  test(
+    'damaged case content cannot be accepted by its version label alone',
+    () async {
+      for (final change in <Map<String, dynamic>>[
+        {'source_end': 999},
+        {'chapter': '../outside'},
+        {
+          'feedback_source': {'request_id': 'invented'},
+        },
+        {
+          'feedback': [
+            {'quote': '不存在的引用'},
+          ],
+        },
+      ]) {
+        final file = await writePracticeFixture(
+          directory.path,
+          schema: 4,
+          changes: change,
+        );
+        final original = await file.readAsBytes();
+        await expectLater(confirm(), throwsFormatException);
+        expect(
+          await File(
+            WritingPreferenceStore.pathFor(directory.path, '测试作品'),
+          ).exists(),
+          isFalse,
+        );
+        expect(await file.readAsBytes(), original);
+      }
+    },
+  );
+
+  test(
     'stale concurrent confirmation cannot overwrite and later updates recover',
     () async {
       await writePracticeFixture(directory.path);

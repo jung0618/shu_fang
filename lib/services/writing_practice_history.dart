@@ -69,7 +69,7 @@ class WritingPracticeCase {
     final decision = field('author_decision', 20);
     final start = data['source_start'];
     final end = data['source_end'];
-    if (![1, 2, 3, 4].contains(data['schema_version']) ||
+    if (!PracticePaths.supportedCaseSchemas.contains(data['schema_version']) ||
         data['id'] != id ||
         !PracticePaths.validId(id) ||
         data['book'] != book ||

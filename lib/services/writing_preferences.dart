@@ -3,9 +3,14 @@ import 'dart:io';
 
 import 'safe_file_writer.dart';
 import 'storage_paths.dart';
+import 'writing_practice_history.dart';
 
 /// IDs are filenames, never arbitrary paths supplied by a record.
 class PracticePaths {
+  // Saving, history reads and explicit confirmation share the same contract.
+  static const currentCaseSchema = 4;
+  static const supportedCaseSchemas = {1, 2, 3, 4};
+
   static bool validId(String id) => RegExp(r'^practice-\d{1,24}$').hasMatch(id);
 
   static String bookDirectory(String root, String book) {
@@ -178,22 +183,9 @@ class WritingPreferenceStore {
     required String sourceCaseId,
     required String text,
   }) => _change(root, book, expectedVersion, (previous) async {
-    final file = File(PracticePaths.casePath(root, book, sourceCaseId));
-    if (await FileSystemEntity.type(file.path, followLinks: false) !=
-            FileSystemEntityType.file ||
-        await file.length() > 160000) {
-      throw const FormatException('来源练习不存在或无法读取');
-    }
-    final source = jsonDecode(await file.readAsString());
-    if (source is! Map<String, dynamic> ||
-        ![1, 2, 3].contains(source['schema_version']) ||
-        source['id'] != sourceCaseId ||
-        source['book'] != book ||
-        source['workspace_root'] != Directory(root).absolute.path ||
-        source['evidence_status'] != 'author_recorded_unassessed' ||
-        source['promoted_to_preference'] != false) {
-      throw const FormatException('来源练习范围或格式无效');
-    }
+    // Use the same complete validation as history, including text and source
+    // bindings. A version label alone cannot make a broken case eligible.
+    await WritingPracticeHistory.loadCase(root, book, sourceCaseId);
     if (previous.items.length >= 200) {
       throw StateError('当前已达 200 项偏好历史的容量上限，暂时无法添加。原记录仍保留。');
     }

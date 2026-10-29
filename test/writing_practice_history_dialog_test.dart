@@ -58,7 +58,7 @@ void main() {
     'author recalls, confirms, follows source, and revokes without editing case',
     (tester) async {
       await tester.runAsync(() async {
-        final file = await writePracticeFixture(directory.path);
+        final file = await writePracticeFixture(directory.path, schema: 4);
         final original = await file.readAsString();
         await mount(tester);
         await tester.tap(find.text('第一章 · 对白'));
