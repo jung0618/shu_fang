@@ -14,6 +14,7 @@
 import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
+import 'package:flutter/foundation.dart';
 import '../services/safe_file_writer.dart';
 import '../services/storage_paths.dart';
 
@@ -32,6 +33,8 @@ class LocalDataSource {
   String? _workspaceRoot;
   int _sessionRevision = 0;
   int get sessionRevision => _sessionRevision;
+  final ValueNotifier<int> _sessionChanges = ValueNotifier(0);
+  ValueListenable<int> get sessionChanges => _sessionChanges;
   bool _workspaceSelected = false;
   bool get hasWorkspace => _workspaceSelected;
   bool get usesPrimaryStorage => _workspaceSelected && _isAdmin;
@@ -45,6 +48,7 @@ class LocalDataSource {
     _booksCache = null;
     _booksCacheKey = null;
     _chapterCache.clear();
+    _sessionChanges.value = _sessionRevision;
   }
 
   // E 阶段: 书籍列表缓存 (避免主页每次访问都重新扫描所有章节文件)
@@ -71,6 +75,7 @@ class LocalDataSource {
     _booksCache = null;
     _booksCacheKey = null;
     _chapterCache.clear();
+    _sessionChanges.value = _sessionRevision;
   }
 
   /// 清除用户 (登出时调用)
@@ -83,6 +88,7 @@ class LocalDataSource {
     _booksCache = null;
     _booksCacheKey = null;
     _chapterCache.clear();
+    _sessionChanges.value = _sessionRevision;
   }
 
   /// 使缓存失效 (内部写入操作后调用)

@@ -4,6 +4,7 @@ import 'package:flutter/services.dart';
 import '../services/writing_request_ledger.dart';
 import '../services/engine_request_status.dart';
 import '../store/local_data_source.dart';
+import 'writing_response_details.dart';
 
 /// Read-only evidence. There is deliberately no replay button: a missing reply
 /// or unknown bill must never silently trigger a second paid generation.
@@ -26,28 +27,52 @@ class _HistoryState extends State<WritingRequestHistoryDialog> {
   String? _cursor;
   String? _error;
   bool _loading = true;
-  late final int _revision;
+  late int _revision;
+  int _loadGeneration = 0;
+  String? _loadedRoot;
 
   @override
   void initState() {
     super.initState();
     _revision = localDataSource.sessionRevision;
+    _loadedRoot = widget.root;
     _load();
   }
 
+  @override
+  void didUpdateWidget(covariant WritingRequestHistoryDialog oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    if (oldWidget.root != widget.root) {
+      _loadGeneration++;
+      _revision = localDataSource.sessionRevision;
+      _loadedRoot = widget.root;
+      _records.clear();
+      _problems.clear();
+      _cursor = null;
+      _error = null;
+      _loading = true;
+      _load();
+    }
+  }
+
   Future<void> _load({bool more = false}) async {
+    final generation = ++_loadGeneration;
+    final root = widget.root;
+    final revision = _revision;
+    _loadedRoot = root;
     setState(() {
       _loading = true;
       _error = null;
     });
     try {
       final page = await WritingRequestLedger.read(
-        widget.root,
+        root,
         cursor: more ? _cursor : null,
       );
-      if (!mounted) return;
-      if (_revision != localDataSource.sessionRevision ||
-          widget.root != localDataSource.storageRoot) {
+      if (!mounted || generation != _loadGeneration) return;
+      if (revision != localDataSource.sessionRevision ||
+          root != localDataSource.storageRoot ||
+          root != widget.root) {
         setState(() {
           _records.clear();
           _problems.clear();
@@ -66,9 +91,13 @@ class _HistoryState extends State<WritingRequestHistoryDialog> {
         _cursor = page.nextCursor;
       });
     } catch (_) {
-      if (mounted) setState(() => _error = '暂时无法读取记录，原文件保留。请检查工作区是否可访问。');
+      if (mounted && generation == _loadGeneration) {
+        setState(() => _error = '暂时无法读取记录，原文件保留。请检查工作区是否可访问。');
+      }
     } finally {
-      if (mounted) setState(() => _loading = false);
+      if (mounted && generation == _loadGeneration) {
+        setState(() => _loading = false);
+      }
     }
   }
 
@@ -165,7 +194,7 @@ class _HistoryState extends State<WritingRequestHistoryDialog> {
                             _RequestRow(
                               key: ValueKey(record.id),
                               record: record,
-                              root: widget.root,
+                              root: _loadedRoot!,
                               revision: _revision,
                               lookup:
                                   widget.requestLookup ??
@@ -183,7 +212,7 @@ class _HistoryState extends State<WritingRequestHistoryDialog> {
                           if (_loading) const LinearProgressIndicator(),
                           const SizedBox(height: 24),
                           Text(
-                            '中断本地接收不代表服务端已取消。缺少完成回执的请求不会自动重试；记录不保存原稿、回复正文或密钥。',
+                            '中断本地接收不代表服务端已取消。缺少完成回执的请求不会自动重试。完整回复另存本机，旧记录缺失时不会自动补写；调用摘要不保存原稿或密钥。',
                             style: theme.textTheme.bodySmall,
                           ),
                         ],
@@ -337,6 +366,7 @@ class _RequestRowState extends State<_RequestRow> {
           ),
         ),
         children: [
+          WritingResponseDetails(root: widget.root, record: record),
           Padding(
             padding: const EdgeInsets.fromLTRB(16, 0, 16, 20),
             child: Column(
@@ -374,11 +404,23 @@ class _RequestRowState extends State<_RequestRow> {
                     icon: const Icon(Icons.copy_outlined, size: 16),
                     label: const Text('复制请求编号'),
                     onPressed: () async {
-                      await Clipboard.setData(ClipboardData(text: record.id));
-                      if (context.mounted) {
-                        ScaffoldMessenger.of(context).showSnackBar(
-                          const SnackBar(content: Text('请求编号已复制')),
-                        );
+                      if (!_sameWorkspace) {
+                        setState(() => _serverMessage = '工作区已切换，无法复制此记录编号。');
+                        return;
+                      }
+                      try {
+                        await Clipboard.setData(ClipboardData(text: record.id));
+                        if (context.mounted && _sameWorkspace) {
+                          ScaffoldMessenger.of(context).showSnackBar(
+                            const SnackBar(content: Text('请求编号已复制')),
+                          );
+                        }
+                      } catch (_) {
+                        if (context.mounted && _sameWorkspace) {
+                          ScaffoldMessenger.of(
+                            context,
+                          ).showSnackBar(const SnackBar(content: Text('复制失败')));
+                        }
                       }
                     },
                   ),

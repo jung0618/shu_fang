@@ -18,6 +18,38 @@ class WritingRequestLedger {
     '${Platform.pathSeparator}requests',
   );
 
+  /// Shared boundary for local journals and reply sidecars. Never traverse a
+  /// linked evidence directory, even when the link stays inside the workspace.
+  static Future<Directory?> localEvidenceDirectory(
+    String root,
+    String child, {
+    bool create = false,
+  }) async {
+    if (!const {'requests', 'responses'}.contains(child)) {
+      throw ArgumentError('本地记录目录无效');
+    }
+    if (await FileSystemEntity.type(root, followLinks: false) !=
+        FileSystemEntityType.directory) {
+      throw const FileSystemException('工作区不是普通目录');
+    }
+    final canonicalRoot = await Directory(root).resolveSymbolicLinks();
+    var path = canonicalRoot;
+    for (final component in ['.shufang', child]) {
+      path = '$path${Platform.pathSeparator}$component';
+      var type = await FileSystemEntity.type(path, followLinks: false);
+      if (type == FileSystemEntityType.notFound && create) {
+        await Directory(path).create();
+        type = await FileSystemEntity.type(path, followLinks: false);
+      }
+      if (type == FileSystemEntityType.notFound) return null;
+      if (type != FileSystemEntityType.directory ||
+          await Directory(path).resolveSymbolicLinks() != path) {
+        throw FileSystemException('本地记录目录不是独立普通目录', path);
+      }
+    }
+    return Directory(path);
+  }
+
   static Future<WritingRequestRun> begin({
     required String root,
     required WritingContextPlan plan,
@@ -33,10 +65,10 @@ class WritingRequestLedger {
         ).map((n) => n.toRadixString(16).padLeft(2, '0')).join();
     final id =
         '${now.microsecondsSinceEpoch.toString().padLeft(16, '0')}-$suffix';
-    final dir = directory(canonicalRoot);
-    await dir.create(recursive: true);
+    final dir = (await localEvidenceDirectory(root, 'requests', create: true))!;
     final file = File('${dir.path}${Platform.pathSeparator}$id.jsonl');
     if (await file.exists()) throw StateError('请求标识冲突，未发送。');
+    await file.create(exclusive: true);
     final meta = <String, dynamic>{
       'workspace_root': canonicalRoot,
       'book': plan.book,
@@ -210,6 +242,9 @@ class WritingRequestRun {
     Map<String, dynamic> receipt = const {},
   }) async {
     try {
+      if (!_canFollow(_state, state)) {
+        throw StateError('请求状态转换无效');
+      }
       final result = <String, dynamic>{
         'output_units': output.length,
         'output_sha256': sha256.convert(utf8.encode(output)).toString(),
@@ -219,6 +254,9 @@ class WritingRequestRun {
         // A completed reply does not establish its price or author acceptance.
         'settlement': 'unknown', 'cost': null, 'currency': null,
       };
+      if (state == 'completed') {
+        await _persistCompletedOutput(output, result);
+      }
       await _append(state, result);
       return state == 'completed'
           ? WritingRequestCompletion._(id, _meta, result)
@@ -226,6 +264,49 @@ class WritingRequestRun {
     } finally {
       WritingRequestLedger._active.remove(id);
     }
+  }
+
+  Future<void> _persistCompletedOutput(
+    String output,
+    Map<String, dynamic> result,
+  ) async {
+    if (output.trim().isEmpty || output.length > 128000) {
+      throw StateError('完整回复超出本机保存范围');
+    }
+    final root = _meta['workspace_root'] as String;
+    await WritingRequestLedger.localEvidenceDirectory(root, 'requests');
+    if (await FileSystemEntity.type(file.path, followLinks: false) !=
+            FileSystemEntityType.file ||
+        await file.resolveSymbolicLinks() != file.path) {
+      throw FileSystemException('调用记录不是普通文件', file.path);
+    }
+    final dir =
+        (await WritingRequestLedger.localEvidenceDirectory(
+          root,
+          'responses',
+          create: true,
+        ))!;
+    final response = File('${dir.path}${Platform.pathSeparator}$id.json');
+    // Exclusive creation preserves any old, corrupt or orphaned evidence.
+    await response.create(exclusive: true);
+    if (await FileSystemEntity.type(response.path, followLinks: false) !=
+            FileSystemEntityType.file ||
+        await response.resolveSymbolicLinks() != response.path) {
+      throw FileSystemException('回复记录不是普通文件', response.path);
+    }
+    await response.writeAsString(
+      jsonEncode({
+        'schema_version': 1,
+        'workspace_root': root,
+        'request_id': id,
+        'context_sha256': _meta['context_sha256'],
+        'output_sha256': result['output_sha256'],
+        'output_units': output.length,
+        'unit': 'utf-16',
+        'body': output,
+      }),
+      flush: true,
+    );
   }
 
   Map<String, dynamic>? _serverReceipt(Map<String, dynamic> raw) {
