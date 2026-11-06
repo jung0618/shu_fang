@@ -228,6 +228,7 @@ class ChatMessage {
   final String reasoning;
   final bool includeInContext;
   final String? directionKey;
+  final String? requestId;
 
   ChatMessage({
     required this.role,
@@ -236,12 +237,14 @@ class ChatMessage {
     this.reasoning = '',
     this.includeInContext = true,
     this.directionKey,
+    this.requestId,
   }) : timestamp = timestamp ?? DateTime.now();
 
   ChatMessage copyWith({
     String? content,
     String? reasoning,
     bool? includeInContext,
+    String? requestId,
   }) {
     return ChatMessage(
       role: role,
@@ -250,6 +253,7 @@ class ChatMessage {
       timestamp: timestamp,
       includeInContext: includeInContext ?? this.includeInContext,
       directionKey: directionKey,
+      requestId: requestId ?? this.requestId,
     );
   }
 

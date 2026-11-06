@@ -10,6 +10,9 @@ import '../services/editor_request_lease.dart';
 import '../services/editor_context_capture.dart';
 import '../services/writing_assistant.dart';
 import '../services/writing_context.dart';
+import '../services/writing_candidate.dart';
+import '../services/writing_request_ledger.dart';
+import 'writing_candidate_preview.dart';
 import 'writing_practice_dialog.dart';
 import '../store/editor_store.dart';
 import '../store/companion_store.dart';
@@ -39,11 +42,28 @@ class AiChatPanelState extends ConsumerState<AiChatPanel> {
   bool _receivedContent = false;
   EditorRequestLease? _requestLease;
   String? _contextDescription;
+  final _comparisons =
+      <String, ({WritingCandidate candidate, CandidateOriginWatch origin})>{};
+
+  void _invalidateComparisons(String reason) {
+    for (final item in _comparisons.values) {
+      item.origin.invalidate(reason);
+    }
+    _pendingOrigin?.invalidate(reason);
+  }
+
+  CandidateOriginWatch? _pendingOrigin;
 
   bool get _requestIsCurrent => mounted && (_requestLease?.isCurrent ?? false);
 
   @override
   void dispose() {
+    _invalidateComparisons('聊天已关闭；这份比较已失效。');
+    for (final item in _comparisons.values) {
+      item.origin.dispose();
+    }
+    _pendingOrigin?.dispose();
+    _pendingOrigin = null;
     _inputCtrl.dispose();
     _scrollCtrl.dispose();
     _inputFocus.dispose();
@@ -94,9 +114,19 @@ class AiChatPanelState extends ConsumerState<AiChatPanel> {
     var started = false;
     var acc = '';
     var reasoning = '';
+    WritingRequestCompletion? completion;
+    CandidateOriginWatch? origin;
     try {
       final source = EditorSourceSnapshot.capture(ref);
       final cmd = parseSlashCommand(text);
+      if (cmd?.action == AiAction.rewrite ||
+          cmd?.action == AiAction.continueWrite) {
+        origin = CandidateOriginWatch(
+          source,
+          ref.read(editorControllerProvider)!.controller,
+        );
+        _pendingOrigin = origin;
+      }
       late WritingContextPlan plan;
       var historyScopeChanged = false;
       if (cmd == null) {
@@ -150,6 +180,7 @@ class AiChatPanelState extends ConsumerState<AiChatPanel> {
         plan: plan,
         model: model,
         useEngine: useEngine,
+        onCompleted: (value) => completion = value,
       )) {
         if (!_requestIsCurrent) return;
         switch (event.type) {
@@ -169,9 +200,36 @@ class AiChatPanelState extends ConsumerState<AiChatPanel> {
         }
       }
       if (_requestIsCurrent && acc.isNotEmpty) {
+        String? comparisonId;
+        if (origin != null && completion != null) {
+          try {
+            final candidate = WritingCandidate.fromCompleted(
+              source: source,
+              plan: plan,
+              completion: completion!,
+              body: acc,
+            );
+            if (candidate != null) {
+              comparisonId = completion!.requestId;
+              if (_comparisons.length >= 8) {
+                _comparisons.remove(_comparisons.keys.first)!.origin.dispose();
+              }
+              _comparisons[comparisonId] = (
+                candidate: candidate,
+                origin: origin,
+              );
+              _pendingOrigin = null;
+              origin = null;
+            }
+          } on StateError {
+            _contextDescription =
+                '${_contextDescription ?? ""} 比较来源核对未通过，回复仍保留在本机记录中。';
+          }
+        }
         final messages = [...ref.read(aiMessagesProvider)];
         messages[messages.length - 1] = messages.last.copyWith(
           includeInContext: true,
+          requestId: comparisonId,
         );
         ref.read(aiMessagesProvider.notifier).state = messages;
         ref.read(companionControllerProvider).setStateExt(CompanionState.happy);
@@ -194,6 +252,11 @@ class AiChatPanelState extends ConsumerState<AiChatPanel> {
         }
       }
     } finally {
+      // A disposed panel has already released the pending watch.
+      if (identical(_pendingOrigin, origin) && origin != null) {
+        _pendingOrigin = null;
+        origin.dispose();
+      }
       if (_requestIsCurrent) {
         ref.read(aiStreamingProvider.notifier).state = null;
       }
@@ -214,6 +277,17 @@ class AiChatPanelState extends ConsumerState<AiChatPanel> {
 
   @override
   Widget build(BuildContext context) {
+    ref.listen(currentBookProvider, (previous, next) {
+      if (previous != next) _invalidateComparisons('作品已切换；旧比较已失效。');
+    });
+    ref.listen(currentChapterProvider, (previous, next) {
+      if (previous != next) _invalidateComparisons('章节已切换；旧比较已失效。');
+    });
+    ref.listen(editorControllerProvider, (previous, next) {
+      if (!identical(previous?.controller, next?.controller)) {
+        _invalidateComparisons('编辑器已重新载入；旧比较已失效。');
+      }
+    });
     final msgs = ref.watch(aiMessagesProvider);
     final b = Theme.of(context).brightness;
     return Column(
@@ -259,7 +333,25 @@ class AiChatPanelState extends ConsumerState<AiChatPanel> {
                     controller: _scrollCtrl,
                     padding: const EdgeInsets.all(S.sm),
                     itemCount: msgs.length,
-                    itemBuilder: (ctx, i) => AiChatBubble(msg: msgs[i]),
+                    itemBuilder: (ctx, i) {
+                      final comparison = _comparisons[msgs[i].requestId];
+                      return AiChatBubble(
+                        msg: msgs[i],
+                        onCompare:
+                            comparison == null
+                                ? null
+                                : () {
+                                  showDialog<void>(
+                                    context: context,
+                                    builder:
+                                        (_) => WritingCandidatePreview(
+                                          candidate: comparison.candidate,
+                                          origin: comparison.origin,
+                                        ),
+                                  );
+                                },
+                      );
+                    },
                   ),
         ),
         if (_contextDescription != null)
@@ -488,7 +580,8 @@ class _SlashChip extends StatelessWidget {
 /// T-3: 单条聊天消息气泡
 class AiChatBubble extends StatelessWidget {
   final ChatMessage msg;
-  const AiChatBubble({super.key, required this.msg});
+  final VoidCallback? onCompare;
+  const AiChatBubble({super.key, required this.msg, this.onCompare});
 
   @override
   Widget build(BuildContext context) {
@@ -547,12 +640,24 @@ class AiChatBubble extends StatelessWidget {
                           : AppPalette.divider(b),
                 ),
               ),
-              child: SelectableText(
-                msg.content.isEmpty ? '...' : msg.content,
-                style: Theme.of(context).textTheme.bodySmall?.copyWith(
-                  height: 1.5,
-                  color: isUser ? AppColors.ai : AppPalette.textPrimary(b),
-                ),
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  SelectableText(
+                    msg.content.isEmpty ? '...' : msg.content,
+                    style: Theme.of(context).textTheme.bodySmall?.copyWith(
+                      height: 1.5,
+                      color: isUser ? AppColors.ai : AppPalette.textPrimary(b),
+                    ),
+                  ),
+                  if (!isUser && onCompare != null)
+                    TextButton.icon(
+                      onPressed: onCompare,
+                      icon: const Icon(Icons.compare_arrows, size: 16),
+                      label: const Text('只读比较'),
+                    ),
+                ],
               ),
             ),
           ),
