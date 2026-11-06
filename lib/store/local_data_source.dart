@@ -217,6 +217,7 @@ class LocalDataSource {
     String bookId,
     String chapterId, {
     String? rootOverride,
+    bool bypassCache = false,
   }) async {
     if (!StoragePaths.validName(bookId) || !StoragePaths.validName(chapterId)) {
       return null;
@@ -232,10 +233,12 @@ class LocalDataSource {
       final stat = await file.stat();
       // 命中缓存: mtime 一致直接返回
       final cached = _chapterCache[cacheKey];
-      if (cached != null && cached.mtime == stat.modified) {
+      if (!bypassCache && cached != null && cached.mtime == stat.modified) {
         return cached.content;
       }
       final content = await file.readAsString();
+      // Version checks must read disk, without replacing the editor's cache.
+      if (bypassCache) return content;
       // 写入缓存 (FIFO 淘汰)
       if (_chapterCache.length >= _chapterCacheMax) {
         _chapterCache.remove(_chapterCache.keys.first);

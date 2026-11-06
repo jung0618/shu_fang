@@ -38,6 +38,43 @@ class WritingCandidate {
     body,
   );
 
+  /// Explicitly supplied author text, distinct from the completed model output.
+  /// This object grants no permission to save or learn.
+  CandidateTextPreview prepareText(String text) {
+    if (text.trim().isEmpty || text.length > 128000) {
+      throw ArgumentError('请填写 1–128,000 个 UTF-16 单位的候选正文。');
+    }
+    // Reject isolated surrogates instead of silently hashing replacement chars.
+    for (var i = 0; i < text.length; i++) {
+      final unit = text.codeUnitAt(i);
+      if (unit >= 0xd800 && unit <= 0xdbff) {
+        if (++i == text.length ||
+            text.codeUnitAt(i) < 0xdc00 ||
+            text.codeUnitAt(i) > 0xdfff) {
+          throw ArgumentError('候选正文包含不完整字符，请重新选取。');
+        }
+      } else if (unit >= 0xdc00 && unit <= 0xdfff) {
+        throw ArgumentError('候选正文包含不完整字符，请重新选取。');
+      }
+    }
+    return CandidateTextPreview._(this, text);
+  }
+
+  /// A fresh observation at review time, not a generation-time baseline or lock.
+  Future<CandidateDiskObservation> inspectDisk() async {
+    final text = await localDataSource.readChapter(
+      source.book,
+      source.chapter,
+      rootOverride: source.root,
+      bypassCache: true,
+    );
+    return CandidateDiskObservation._(
+      text == null ? null : fingerprint(text),
+      text?.length,
+      text == source.text,
+    );
+  }
+
   static String fingerprint(String text) =>
       sha256.convert(utf8.encode(text)).toString();
 
@@ -98,6 +135,27 @@ class WritingCandidate {
     }
     return null;
   }
+}
+
+class CandidateTextPreview {
+  final WritingCandidate candidate;
+  final String text;
+  final String textSha256;
+  final String selectionSha256;
+  late final CandidateDifference difference = CandidateDifference.between(
+    candidate.before,
+    text,
+  );
+  CandidateTextPreview._(this.candidate, this.text)
+    : textSha256 = WritingCandidate.fingerprint(text),
+      selectionSha256 = WritingCandidate.fingerprint(candidate.before);
+}
+
+class CandidateDiskObservation {
+  final String? sha256;
+  final int? units;
+  final bool matchesSource;
+  const CandidateDiskObservation._(this.sha256, this.units, this.matchesSource);
 }
 
 /// Watches the frozen editor from before dispatch, including edit-and-revert.
