@@ -250,11 +250,33 @@ class LocalDataSource {
     }
   }
 
-  /// 写入章节正文 (用于 Ctrl+S 自动保存)
+  /// The editor binds its draft to this actual disk read, not the read cache.
+  Future<TextFileSnapshot?> readChapterSnapshot(
+    String bookId,
+    String chapterId, {
+    required String rootOverride,
+  }) async {
+    if (!StoragePaths.validName(bookId) || !StoragePaths.validName(chapterId)) {
+      return null;
+    }
+    try {
+      return await SafeFileWriter.readTextSnapshot(
+        '$rootOverride/books/$bookId/chapters/$chapterId.md',
+      );
+    } on FileSystemException {
+      return null;
+    } on FormatException {
+      return null;
+    }
+  }
+
+  /// Chapter writes require the version loaded by the editor. A conflict is
+  /// propagated so callers can preserve the draft and explain the blocked save.
   Future<bool> writeChapter(
     String bookId,
     String chapterId,
     String content, {
+    required String expectedSha256,
     String? rootOverride,
   }) async {
     if (!StoragePaths.validName(bookId) || !StoragePaths.validName(chapterId)) {
@@ -265,7 +287,11 @@ class LocalDataSource {
     final file = File(path);
     try {
       if (!await file.exists()) return false;
-      await SafeFileWriter.writeText(path, content, keepPrevious: true);
+      await SafeFileWriter.writeTextIfUnchanged(
+        path,
+        content,
+        expectedSha256: expectedSha256,
+      );
       // 性能优化: 写入后更新缓存 (避免下次读时再走磁盘)
       final stat = await file.stat();
       final cacheKey = '$root/$bookId/$chapterId';
@@ -276,6 +302,8 @@ class LocalDataSource {
       _chapterCache[cacheKey] = (mtime: stat.modified, content: content);
       _booksCache = null;
       return true;
+    } on FileVersionConflict {
+      rethrow;
     } catch (_) {
       return false;
     }

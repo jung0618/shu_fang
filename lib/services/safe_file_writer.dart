@@ -1,4 +1,19 @@
+import 'dart:convert';
 import 'dart:io';
+import 'package:crypto/crypto.dart';
+
+/// Both fields come from the same disk read, never from an mtime cache.
+class TextFileSnapshot {
+  final String text;
+  final String sha256Hex;
+  TextFileSnapshot._(List<int> bytes)
+    : text = utf8.decode(bytes),
+      sha256Hex = sha256.convert(bytes).toString();
+}
+
+class FileVersionConflict implements Exception {
+  const FileVersionConflict();
+}
 
 /// Serializes writes to each file. The destination stays intact until the
 /// sibling temporary file has been flushed. Chapters retain one prior version.
@@ -17,18 +32,65 @@ class SafeFileWriter {
     String path,
     String text, {
     bool keepPrevious = false,
+  }) => _writeText(path, text, keepPrevious: keepPrevious);
+
+  static Future<TextFileSnapshot> readTextSnapshot(String path) async =>
+      TextFileSnapshot._(await File(path).readAsBytes());
+
+  /// Serializes the comparison with this process's other writes. External
+  /// writers are checked again before rename; this is not an OS-level CAS.
+  static Future<void> writeTextIfUnchanged(
+    String path,
+    String text, {
+    required String expectedSha256,
+  }) => _writeText(
+    path,
+    text,
+    keepPrevious: true,
+    expectedSha256: expectedSha256,
+  );
+
+  static Future<void> _checkVersion(File file, String expected) async {
+    if (sha256.convert(await file.readAsBytes()).toString() != expected) {
+      throw const FileVersionConflict();
+    }
+  }
+
+  static Future<void> _writeText(
+    String path,
+    String text, {
+    required bool keepPrevious,
+    String? expectedSha256,
   }) {
     final file = File(path).absolute;
     return _enqueue(file, () async {
-      await file.parent.create(recursive: true);
-      if (keepPrevious && await file.exists()) {
+      List<int>? previousBytes;
+      if (expectedSha256 != null) {
+        previousBytes = await file.readAsBytes();
+        if (sha256.convert(previousBytes).toString() != expectedSha256) {
+          throw const FileVersionConflict();
+        }
+      } else {
+        await file.parent.create(recursive: true);
+        if (keepPrevious && await file.exists()) {
+          previousBytes = await file.readAsBytes();
+        }
+      }
+      if (keepPrevious && previousBytes != null) {
         final recovery = File(
           '${file.parent.path}/.recovery/${file.uri.pathSegments.last}.previous',
         );
         await recovery.parent.create(recursive: true);
-        await _replace(recovery, await file.readAsString());
+        await _replaceBytes(recovery, previousBytes);
       }
-      await _replace(file, text);
+      await _replaceBytes(
+        file,
+        utf8.encode(text),
+        beforeRename:
+            expectedSha256 == null
+                ? null
+                : () => _checkVersion(file, expectedSha256),
+      );
     });
   }
 
@@ -58,9 +120,14 @@ class SafeFileWriter {
     return operation;
   }
 
-  static Future<void> _replace(File file, String text) async {
+  static Future<void> _replaceBytes(
+    File file,
+    List<int> bytes, {
+    Future<void> Function()? beforeRename,
+  }) async {
     final temporary = File('${file.path}.writing-$pid-${_sequence++}');
-    await temporary.writeAsString(text, flush: true);
+    await temporary.writeAsBytes(bytes, flush: true);
+    await beforeRename?.call();
     // Same directory: no cross-volume move. Failed replacements retain the
     // temporary file for recovery rather than truncating the destination.
     await temporary.rename(file.path);

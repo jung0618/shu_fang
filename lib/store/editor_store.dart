@@ -52,13 +52,7 @@ final chapterContentProvider = FutureProvider.autoDispose
         chapterKey.substring(0, separator),
         chapterKey.substring(separator + 1),
       );
-      final draft = chapterSaveQueue.draftFor(address);
-      if (draft != null) return draft;
-      final content = await localDataSource.readChapter(
-        address.book,
-        address.chapter,
-        rootOverride: address.root,
-      );
+      final content = await ref.read(chapterSaveQueueProvider).load(address);
       if (content == null) {
         throw StateError('章节不存在或无法读取，请检查数据目录；正文未被覆盖。');
       }

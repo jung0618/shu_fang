@@ -1,7 +1,12 @@
 import 'dart:async';
+import 'dart:convert';
+import 'package:crypto/crypto.dart';
 import 'package:flutter/foundation.dart';
 import '../store/local_data_source.dart';
 import '../store/models.dart' show SaveStatus;
+import 'safe_file_writer.dart';
+
+enum ChapterSaveProblem { diskChanged, baselineMissing, unavailable }
 
 /// An immutable address, captured before asynchronous work or navigation.
 @immutable
@@ -28,7 +33,15 @@ class _Draft {
   SaveStatus status = SaveStatus.unsaved;
   Timer? timer;
   Future<bool>? running;
+  String? expectedSha256;
+  ChapterSaveProblem? problem;
   _Draft(this.text);
+
+  _Draft.loaded(TextFileSnapshot snapshot)
+    : text = snapshot.text,
+      expectedSha256 = snapshot.sha256Hex,
+      savedRevision = 0,
+      status = SaveStatus.idle;
 }
 
 /// Owns drafts independently of editor widgets. Failed writes remain retryable;
@@ -42,6 +55,24 @@ class ChapterSaveQueue extends ChangeNotifier {
   String? draftFor(ChapterAddress address) => _drafts[address]?.text;
   SaveStatus statusFor(ChapterAddress address) =>
       _drafts[address]?.status ?? SaveStatus.idle;
+  ChapterSaveProblem? problemFor(ChapterAddress address) =>
+      _drafts[address]?.problem;
+
+  /// A second read cannot silently rebase an open or unsaved editor. Competing
+  /// loads use the first accepted snapshot; a late read never replaces a draft.
+  Future<String?> load(ChapterAddress address) async {
+    final existing = _drafts[address];
+    if (existing != null) return existing.text;
+    final snapshot = await localDataSource.readChapterSnapshot(
+      address.book,
+      address.chapter,
+      rootOverride: address.root,
+    );
+    final current = _drafts[address];
+    if (current != null) return current.text;
+    if (snapshot == null || _disposed) return null;
+    return (_drafts[address] = _Draft.loaded(snapshot)).text;
+  }
 
   void stage(ChapterAddress address, String text) {
     final draft = _drafts.putIfAbsent(address, () => _Draft(text));
@@ -50,13 +81,17 @@ class ChapterSaveQueue extends ChangeNotifier {
       draft.revision++;
     }
     draft.status =
-        draft.savedRevision == draft.revision
+        draft.problem != null
+            ? SaveStatus.error
+            : draft.savedRevision == draft.revision
             ? SaveStatus.saved
             : SaveStatus.unsaved;
     draft.timer?.cancel();
-    draft.timer = Timer(const Duration(seconds: 2), () {
-      flush(address);
-    });
+    if (draft.problem == null) {
+      draft.timer = Timer(const Duration(seconds: 2), () {
+        flush(address);
+      });
+    }
     _changed();
   }
 
@@ -66,6 +101,11 @@ class ChapterSaveQueue extends ChangeNotifier {
     draft.timer?.cancel();
     if (draft.running != null) return draft.running!;
     if (draft.savedRevision == draft.revision) return Future.value(true);
+    // Conflicts and unknown bases stay blocked even if disk later changes back.
+    if (draft.problem == ChapterSaveProblem.diskChanged ||
+        draft.problem == ChapterSaveProblem.baselineMissing) {
+      return Future.value(false);
+    }
     final operation = _write(address, draft);
     draft.running = operation;
     operation.then((_) {
@@ -75,6 +115,12 @@ class ChapterSaveQueue extends ChangeNotifier {
   }
 
   Future<bool> _write(ChapterAddress address, _Draft draft) async {
+    if (draft.expectedSha256 == null) {
+      draft.problem = ChapterSaveProblem.baselineMissing;
+      draft.status = SaveStatus.error;
+      _changed();
+      return false;
+    }
     while (draft.savedRevision != draft.revision) {
       final revision = draft.revision;
       final text = draft.text;
@@ -86,16 +132,23 @@ class ChapterSaveQueue extends ChangeNotifier {
           address.book,
           address.chapter,
           text,
+          expectedSha256: draft.expectedSha256!,
           rootOverride: address.root,
         );
+      } on FileVersionConflict {
+        draft.problem = ChapterSaveProblem.diskChanged;
+        ok = false;
       } catch (_) {
         ok = false;
       }
       if (!ok) {
+        draft.problem ??= ChapterSaveProblem.unavailable;
         draft.status = SaveStatus.error;
         _changed();
         return false;
       }
+      draft.problem = null;
+      draft.expectedSha256 = sha256.convert(utf8.encode(text)).toString();
       draft.savedRevision = revision;
     }
     draft.status = SaveStatus.saved;

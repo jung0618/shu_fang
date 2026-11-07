@@ -1,6 +1,7 @@
 import 'dart:async';
 import '../services/chapter_save_queue.dart';
 import 'package:flutter/material.dart';
+import '../widgets/chapter_save_notice.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import '../store/editor_store.dart';
@@ -363,6 +364,13 @@ class _ChapterEditorState extends ConsumerState<_ChapterEditor> {
                             else
                               _SaveStatusChip(),
                           ],
+                        ),
+                      ),
+                      ChapterSaveNotice(
+                        address: ChapterAddress(
+                          root,
+                          widget.book!,
+                          widget.chapter!,
                         ),
                       ),
                       // 主体
